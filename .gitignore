@@ -1,0 +1,18 @@
+# Personal config - contains webhooks, private server links, personal choices
+biome_hopper_config.ini
+
+# Personal attack sequences
+attack_sequences.txt
+
+# Logs and backups
+biome_hopper.log
+*.bak
+*.tmp
+
+# Windows junk
+Thumbs.db
+desktop.ini
+
+# Editor folders
+.vscode/
+.idea/

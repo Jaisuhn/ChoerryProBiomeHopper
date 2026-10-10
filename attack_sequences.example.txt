@@ -1,0 +1,26 @@
+; Example attack sequence file.
+; Copy this to attack_sequences.txt and edit as needed.
+; Each [SectionName] starts a new sequence.
+
+[default]
+click 961 713
+sleep 800
+
+; Example: pulse-swing with ability usage
+[hydra]
+hold 961 713
+sleep 400
+send q
+sleep 200
+send z
+sleep 200
+send x
+sleep 200
+move 250 250
+release
+sleep 100
+
+; Example: simple click-swing
+[simple]
+click 961 713
+sleep 800
