@@ -5,14 +5,15 @@ chat, pings you on Discord when a rare biome or boss appears, and hops
 to the next server automatically until something good shows up.
 
 Works across one account or many. Designed for multi-boxing — run it on
-your main PC and on RDPs at the same time (will explain further down).
+your main PC and on RDPs at the same time (will explain more in video tutorial, will add here later).
 
+![CRCW Biome Hopper main window](docs/screenshot.png)
 ---
 
 ## Quick Start
 
 1. Install [AutoHotkey v2](https://www.autohotkey.com/v2/)
-2. Download the [latest release](../../releases/latest)
+2. Download the [latest release](https://github.com/Jaisuhn/ChoerryProBiomeHopper/releases/latest)
 3. **Extract** the zip to a folder — do not run from inside the zip
 4. Double-click `ChoerryProBiomeHopper.ahk`
 5. Open **Tools → Discord Notifications** and paste your webhook + private server link
@@ -21,6 +22,7 @@ your main PC and on RDPs at the same time (will explain further down).
 
 **Full setup walkthrough →** [docs/first-run.md](docs/first-run.md)
 **Video tutorial →** *(coming soon)*
+**Latest release →** [github.com/Jaisuhn/ChoerryProBiomeHopper/releases/latest](https://github.com/Jaisuhn/ChoerryProBiomeHopper/releases/latest)
 
 ---
 
