@@ -92,7 +92,12 @@ If you want a specific role mentioned (e.g. `@Old Dragon`):
 The script needs to know where things are on your screen. This is
 per-account, so you'll do this once for each PC/RDP you use.
 
-**Do these in order, with Roblox open in the background:**
+**Do these in order, with Roblox open in the background.**
+
+> ⚠️ **Every capture below is per-account.** If you run this on your main PC
+> and three RDPs, you need to repeat Step 6 on each machine (or copy
+> `biome_hopper_config.ini` after capturing on one, if the screens are
+> identical). Same for Step 4 — each account has its own private server link.
 
 ### 6a. Capture Join Window
 
@@ -154,10 +159,14 @@ The script saves those coordinates.
 5. Close the window — changes save automatically
 
 **Suggested starter config:**
-- Rare biomes → **GOOD** (you want to be pinged)
-- Common biomes → **BAD** (you want to hop out)
+
+- Rare biomes → **GOOD** (you want to be pinged, script stays)
 - Ultra-rare biomes → **GOOD**
-- The default state (`world has returned to normal`) → **BAD**
+- Common biomes → **BAD** (script hops out immediately)
+- The default state (`world has returned to normal`) → **GOOD**
+
+The default state being GOOD is what makes the script sit on a fresh
+server and watch for a boss spawn instead of immediately hopping again.
 
 You can tweak this any time.
 
@@ -184,6 +193,10 @@ The script will:
 3. If it sees a bad biome → close Roblox, rejoin the private server,
    and check again
 4. If a boss spawns and the biome is marked GOOD → send a boss ping
+5. **Priority boss override** — if Orenga (or any boss flagged as `priority`)
+   spawns, the script stops immediately, pauses hopping, and pings you on
+   Discord. This fires even if the script was about to rejoin out of a bad
+   biome, so you never lose the spawn to an auto-hop.
 
 Watch the **LAST OCR RESULT** box to see what the script is reading.
 

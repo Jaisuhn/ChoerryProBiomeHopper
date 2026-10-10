@@ -33,8 +33,9 @@ your main PC and on RDPs at the same time (will explain further down).
 - **Auto-hop** — rejoins your private server when a bad biome appears, until a good one shows up
 - **Camp-on-good** — stays put and pings you when a rare biome appears, resets when the biome returns to normal
 - **Ore pings** — optional pings for ore spawns like Ultimus and Rainbowite (shoutout Skittlz for this idea)
-- **Auto-attack** — (WORK IN PROGRESS!) optional attack sequence that runs while camping a biome (for AFK farmers)
+- **Auto-attack** — optional attack sequence that runs while camping a biome. Sequences live in `attack_sequences.txt` and are editable via **Tools → Edit Attack Sequences**. ⚠️ *Work in progress — test on an alt before relying on it.*
 - **Watchdog** — pings you on Discord if the script gets stuck and needs a manual check
+- **Priority boss override** — if Orenga (or any boss flagged as priority) spawns, the script stops immediately and pings you on Discord, even if it was about to rejoin out of a bad biome
 
 ## Required / Optional
 
@@ -43,7 +44,7 @@ your main PC and on RDPs at the same time (will explain further down).
 - **Roblox Account Manager** — OR any browser you use to open the private server link (Chrome, Firefox, etc.)
 - **Discord webhook** — for notifications (optional but recommended)
 
-## Hotkeys (I think you can change this...?)
+## Hotkeys (technically is changeable via code but not via GUI iirc)
 
 | Key | Action |
 |---|---|
@@ -56,6 +57,15 @@ your main PC and on RDPs at the same time (will explain further down).
 | **Ctrl+Alt+T** | Debug: show OCR scan results |
 | **Ctrl+Shift+A** | Toggle auto-attack manually |
 | **Ctrl+Shift+1..4** | Manual hop for multi-RDP setups |
+| **Ctrl+Alt+O** | Test: fire the Orenga alert |
+| **Ctrl+Alt+B** | Debug: dump the boss-bar OCR text |
+| **Ctrl+Alt+Z** | Stage the last boss for the CRCW Discord |
+| **Ctrl+Alt+W** | Stage the last biome for the CRCW Discord |
+
+Every setting (webhook URLs, private server link, chat display name, biome
+and ore choices, captured coordinates) is saved automatically to
+`biome_hopper_config.ini` in the same folder as the script. That file is
+per-account — do not copy it between accounts.
 
 ## Troubleshooting
 

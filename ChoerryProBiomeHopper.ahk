@@ -38,6 +38,8 @@ global AttackEditorGui := 0
 global OreSelectorGui := 0
 global DiscordConfigGui := 0
 global LuckCalcGui := 0
+global SelectedMonitor := 1
+global LastErrorCheckTick := 0 ; used by the currently disabled error-screen check. may be relevant later.
 
 global WatchdogLastStatus := ""
 global WatchdogLastStatusChangeTick := 0
@@ -50,6 +52,15 @@ global LastBossNotifyTick := Map()
 global MacroRunning := false
 global MacroPaused := false
 global MacroMode := ""
+
+; ---- Orenga (priority roaming boss) ----
+global OrengaAlertActive := false
+global OrengaLastDetectTick := 0
+global OrengaDetectCooldownMs := 500     ; rate-limit OCR to 5x/second
+; Match on a set of fragments so common OCR misreads still hit.
+; Each of these is unlikely to appear in any other boss name.
+global OrengaKeywords := ["oreng", "0reng", "oren9", "0ren9", "oreng4"]
+global OrengaRoleID := "1545938717594620045" ;insert your own role ID for Orenga
 
 global AutoAttackEnabled := false
 global AutoAttackIntervalMs := 80    ; clicks per interval
@@ -126,7 +137,7 @@ global SafeClickRelX := -1
 global SafeClickRelY := -1
 global SafeClickConfigured := false
 global RobloxLaunchTimeout := 60000
-global ChatFocusInterval := 5000
+global ChatFocusInterval := 4000
 global LastChatFocusTick := 0
 
 global UsernameFieldX := 0
@@ -371,10 +382,10 @@ global BiomeDefs := [
     { id: "pirate",     keywords: ["pirate army"],              biomeName: "A pirate army is attacking!",       roleID: "", defaultGood: false, bosses: [] },
 
     ; ============================================================
-    ; DEFAULT STATE  (shown after rejoining and after every boss kill)
-    ; Defaults to IGNORED so it doesn't trigger an infinite rejoin loop.
-    ; Flip to GOOD in the Biome Selector if you want to camp it for
-    ; nacker / Medusa / Zeus / etc.
+    ; Defaults to GOOD: on a fresh server the script enters TARGET BIOME
+    ; mode and camps `normal`, pinging if a boss spawns and rejoining when
+    ; a boss with leave:true appears. Flip to IGNORED if you'd rather the
+    ; script keep hopping regardless.
     ; ============================================================
         { id: "normal", keywords: ["world has returned to normal"], biomeName: "The world has returned to normal.",
       roleID: "", defaultStatus: "good", autoAttack: true, attackSequence: "autoswing",
@@ -614,6 +625,179 @@ BuildBiomeLookups()
             BiomeByKeyword[StrLower(kw)] := def
 }
 
+; ============================================================
+; GLOBAL BOSSES
+;
+; Bosses that can spawn in ANY biome (roaming / event bosses).
+; Rather than duplicating these entries in every biome's boss list,
+; we inject them at startup so the existing detection code finds them
+; no matter which biome you're in or scanning.
+;
+; To add another roaming boss later, just append to GlobalBosses.
+; ============================================================
+
+global GlobalBosses := [
+    { name: "Orenga", keywords: ["orenga"], roleID: "1543785808178184202", notify: true, leave: false, isGlobal: true, priority: true}
+]
+
+InjectGlobalBosses()
+{
+    global BiomeDefs, GlobalBosses
+
+    for def in BiomeDefs
+    {
+        for gb in GlobalBosses
+        {
+            ; Skip if the biome already has this boss defined explicitly.
+            already := false
+            for bossObj in def.bosses
+            {
+                if (bossObj.name = gb.name)
+                {
+                    already := true
+                    break
+                }
+            }
+            if !already
+                def.bosses.Push(gb)
+        }
+    }
+}
+
+; ============================================================
+; PRIORITY BOSS DETECTION
+;
+; A priority boss (Orenga etc.) overrides ALL other logic. When
+; detected, the script:
+;   1. Fires a Discord ping immediately
+;   2. Stops the macro entirely
+;   3. Cancels any pending rejoin
+;
+; Detection uses a tight scan region for the boss name so it can
+; run every ~100ms without slowing the main loop. It also checks
+; chat as a fallback in case the bar hasn't rendered yet.
+; ============================================================
+
+GetBossNameRect()
+{
+    try
+    {
+        hwnd := WinExist("ahk_exe RobloxPlayerBeta.exe")
+        if hwnd
+        {
+            WinGetPos(&wx, &wy, &ww, &wh, "ahk_id " . hwnd)
+            return {
+                x: wx + Round(ww * 0.35),
+                y: wy + Round(wh * 0.70),
+                w: Round(ww * 0.30),
+                h: Round(wh * 0.10)
+            }
+        }
+    }
+    catch
+    {
+    }
+    return {
+        x: Round(A_ScreenWidth * 0.35),
+        y: Round(A_ScreenHeight * 0.70),
+        w: Round(A_ScreenWidth * 0.30),
+        h: Round(A_ScreenHeight * 0.10)
+    }
+}
+
+CheckPriorityBoss()
+{
+    global GlobalBosses, ChatOCR_X, ChatOCR_Y, ChatOCR_WIDTH, ChatOCR_HEIGHT
+
+    if !IsObject(GlobalBosses)
+        return ""
+
+    ; --- 1) Boss name strip — fast, small region ---
+    nameText := ""
+    try
+    {
+        r := GetBossNameRect()
+        res := OCR.FromRect(r.x, r.y, r.w, r.h, {lang: "en-US"})
+        nameText := StrLower(res.Text)
+    }
+    catch
+    {
+    }
+
+    if (nameText != "")
+    {
+        for gb in GlobalBosses
+        {
+            if !(gb.HasProp("priority") && gb.priority)
+                continue
+            for kw in gb.keywords
+            {
+                if InStr(nameText, kw)
+                    return gb
+            }
+        }
+    }
+
+    ; --- 2) Chat fallback, in case the bar hasn't rendered yet ---
+    chatText := ""
+    try
+    {
+        res := OCR.FromRect(ChatOCR_X, ChatOCR_Y, ChatOCR_WIDTH, ChatOCR_HEIGHT, {lang: "en-US"})
+        chatText := StrLower(res.Text)
+    }
+    catch
+    {
+    }
+
+    if (chatText != "")
+    {
+        for gb in GlobalBosses
+        {
+            if !(gb.HasProp("priority") && gb.priority)
+                continue
+            for kw in gb.keywords
+            {
+                if InStr(chatText, kw)
+                    return gb
+            }
+        }
+    }
+
+    return ""
+}
+
+HandlePriorityBoss(bossDef)
+{
+    global MacroRunning, PrivateServerLink, DiscordWebhookURL
+    global MacroMode
+
+    ; Fire the ping FIRST, before anything else can interfere.
+    if (Trim(DiscordWebhookURL) != ""
+    &&  DiscordWebhookURL != "PASTE_NEW_DISCORD_WEBHOOK_HERE")
+    {
+        msg := "🚨🚨 **PRIORITY BOSS SPAWNED: " . bossDef.name . "** 🚨🚨`n`n"
+             . "The script has **STOPPED**. Get in-game ASAP."
+
+        link := Trim(PrivateServerLink)
+        if (link != "" && link != "PASTE_YOUR_PRIVATE_SERVER_LINK_HERE")
+            msg .= "`n" . link
+
+        try SendDiscordWebhook(DiscordWebhookURL, msg, bossDef.roleID)
+    }
+
+    ; Halt everything.
+    StopAutoAttack()
+    SetTimer(AntiAfkTick, 0)
+    SetTimer(WatchdogTick, 0)
+    MacroRunning := false
+
+    UpdateStatus("PRIORITY BOSS", bossDef.name)
+    UpdateOCRResult(
+        "!!! PRIORITY BOSS DETECTED: " . bossDef.name . " !!!`n`n"
+        . "Script has been STOPPED. Rejoin flow cancelled.`n`n"
+        . "Get into the game now - the server is still open."
+    )
+}
 
 ; ============================================================
 ; COLOR-AWARE CHAT LINE CLASSIFICATION
@@ -833,6 +1017,7 @@ ProbeOCRLines()
 ; SHOW GUI IMMEDIATELY
 ; ============================================================
 
+InjectGlobalBosses()
 BuildBiomeLookups()
 BuildOreLookups()
 LoadOreChoices()
@@ -1648,12 +1833,14 @@ StartBiomeHop(mode)
 {
     global AutoAttackActive, AutoAttackStartedTick, AutoAttackMaxMs
     global MacroRunning, MacroPaused, MacroMode
+    global OrengaAlertActive
     global OCR_X, OCR_Y, OCR_WIDTH, OCR_HEIGHT
     global TargetBiomeActive, TargetBiomeKeyword, TargetBiomeName
     global TargetBiomeDef, TargetPingedBosses
     global TargetBiomeStartedTick, TargetChatBaseline
     global LastChatFocusTick, LastHandledBiomeDef, LastHandledBossObj
     global BadBiomeSeenCount, BadBiomeSeenId
+    global LastErrorCheckTick
 
     if MacroRunning
     {
@@ -1664,6 +1851,7 @@ StartBiomeHop(mode)
     MacroRunning := true
     MacroPaused := false
     MacroMode := mode
+    OrengaAlertActive := false
     TargetBiomeActive := false
     TargetBiomeKeyword := ""
     TargetBiomeName := ""
@@ -1688,15 +1876,18 @@ StartBiomeHop(mode)
     if ActivateRoblox()
     {
         global PlayButtonConfigured
-        if PlayButtonConfigured
+        if PlayButtonConfigured && IsPlayButtonVisible()
         {
-            Sleep(600)
-            SendEvent("{Backslash}")
-            Sleep(600)
-            SendEvent("w")
-            Sleep(600)
-            SendEvent("{Enter}")
-            Sleep(3000)
+            ; Same nudge-click the rejoin path uses. Pixel-detect the
+            ; green Play button, nudge 1px (forces a fresh mouse-move
+            ; event so Roblox registers the click), then click.
+            Sleep(300)
+            MouseMove(PlayButtonX, PlayButtonY, 0)
+            Sleep(120)
+            MouseMove(PlayButtonX + 1, PlayButtonY + 1, 0)
+            Sleep(60)
+            Click("Left")
+            Sleep(2000)
         }
     }
     else
@@ -1721,6 +1912,23 @@ StartBiomeHop(mode)
 
         if !WaitWhilePaused()
             break
+
+        ; ---- PRIORITY CHECK: Orenga ----
+        ; Runs before any biome/boss logic. If it's visible, we pause
+        ; immediately so nothing else (especially a rejoin) can fire.
+        if CheckForOrenga()
+        {
+            HandleOrengaFound()
+            if !WaitWhilePaused()
+                break
+            continue
+        }
+        else if OrengaAlertActive
+        {
+            ; Orenga no longer visible - clear alert so a new spawn can
+            ; re-fire later.
+            OrengaAlertActive := false
+        }        
 
         if TargetBiomeActive
         {
@@ -1770,28 +1978,42 @@ StartBiomeHop(mode)
         ; The slash is intentional: it keeps Roblox chat focused/visible.
         ; Do it periodically rather than every OCR pass so it does not spam the chat box.
         KeepRobloxChatFocused()
-                ; Periodic error-screen check - Roblox sometimes opens to an
-        ; error state that leaves the macro sitting on a blank screen.
-        if CheckRobloxErrorScreen()
-        {
-            UpdateStatus("ROBLOX ERROR", "Closing and rejoining")
-            UpdateOCRResult("Detected Roblox error screen. Closing Roblox fully and rejoining.")
 
-            ; Close Roblox: send window-close, wait, force-kill if needed.
-            hwnd := WinExist("ahk_exe RobloxPlayerBeta.exe")
-            if hwnd
+        ; ------------------------------------------------------------------
+        ; Roblox error-screen check.
+        ;
+        ; DISABLED in v1.0.0: the OCR regions used here false-positive on
+        ; freshly-joined servers (something in the loading screen / chat
+        ; scroll matches one of the error phrases), which caused an instant
+        ; rejoin loop before the chat scanner ever ran.
+        ;
+        ; To try it, change `false` to `A_TickCount - LastErrorCheckTick > 2000`
+        ; and re-test. Expect to tune the phrase list or the OCR regions.
+        ; ------------------------------------------------------------------
+        if (false)
+        {
+            LastErrorCheckTick := A_TickCount
+            if CheckRobloxErrorScreen()
             {
-                try WinClose("ahk_id " . hwnd)
-                closeDeadline := A_TickCount + 3000
-                while WinExist("ahk_exe RobloxPlayerBeta.exe") && A_TickCount < closeDeadline
-                    Sleep(50)
+                UpdateStatus("ROBLOX ERROR", "Closing and rejoining")
+                UpdateOCRResult("Detected Roblox error screen. Closing Roblox fully and rejoining.")
+
+                ; Close Roblox: send window-close, wait, force-kill if needed.
+                hwnd := WinExist("ahk_exe RobloxPlayerBeta.exe")
+                if hwnd
+                {
+                    try WinClose("ahk_id " . hwnd)
+                    closeDeadline := A_TickCount + 3000
+                    while WinExist("ahk_exe RobloxPlayerBeta.exe") && A_TickCount < closeDeadline
+                        Sleep(50)
+                }
+                ; Still alive? Force-kill.
+                if WinExist("ahk_exe RobloxPlayerBeta.exe")
+                {
+                    try Run("taskkill /F /IM RobloxPlayerBeta.exe", , "Hide")
+                    Sleep(1500)
             }
-            ; Still alive? Force-kill.
-            if WinExist("ahk_exe RobloxPlayerBeta.exe")
-            {
-                try Run("taskkill /F /IM RobloxPlayerBeta.exe", , "Hide")
-                Sleep(1500)
-            }
+        }
 
             ; Rejoin.
             if !RejoinRoblox()
@@ -1802,7 +2024,7 @@ StartBiomeHop(mode)
             FocusRobloxChat()
             continue
         }
-        Sleep(60)
+        Sleep(20)
 
         if !MacroRunning
             break
@@ -1951,27 +2173,10 @@ StartBiomeHop(mode)
 
         if (evt.type = "BAD")
         {
-            ; Require 2 consecutive detections of the same biome before rejoining.
-            ; The newest chat line can be partially clipped and OCR'd wrong on
-            ; the first pass; a second pass confirms.
-            if (BadBiomeSeenId = evt.def.id)
-            {
-                BadBiomeSeenCount += 1
-            }
-            else
-            {
-                BadBiomeSeenId := evt.def.id
-                BadBiomeSeenCount := 1
-            }
-
-            if (BadBiomeSeenCount < 2)
-            {
-                UpdateStatus("BAD BIOME?", evt.def.biomeName)
-                UpdateOCRResult("Possible bad biome: " . evt.def.biomeName . " (confirming...)")
-                Sleep(150)
-                continue
-            }
-
+            ; Rejoin immediately - no second confirmation pass.
+            ; This shaves ~150ms per bad biome, which is noticeable
+            ; when you're hopping fast. The keyword matching is specific
+            ; enough that a single hit is reliable.
             BadBiomeSeenCount := 0
             BadBiomeSeenId := ""
 
@@ -2029,9 +2234,9 @@ KeepRobloxChatFocused()
     ; no click, no focus theft.
     MouseGetPos(&origX, &origY)
     MouseMove(OCR_X + 100, OCR_Y + 100, 3)
-    Sleep(80)
-    MouseMove(origX, origY, 3)
     Sleep(40)
+    MouseMove(origX, origY, 3)
+    Sleep(20)
 
     LastChatFocusTick := A_TickCount
 }
@@ -2086,6 +2291,16 @@ MonitorTargetBiome()
     {
         UpdateOCRResult("TARGET CHAT OCR FAILED: " . err.Message)
     }
+    ; Priority boss check overrides camp behaviour too.
+    priorityBoss := CheckPriorityBoss()
+    if (priorityBoss != "")
+    {
+        HandlePriorityBoss(priorityBoss)
+        return "STOPPED"
+    }
+
+    ; Ore spawns can happen while camping too — check every pass.
+    DetectOreSpawns(chatLines)
 
     ; ---- 2) Count occurrences of each normalized line ----
     currentCounts := Map()
@@ -2129,14 +2344,6 @@ MonitorTargetBiome()
         origText := origByNorm[n]
         low := StrLower(origText)
 
-        ; World reset?
-        if InStr(low, "world has returned to normal")
-        {
-            if (TargetBiomeDef.id != "normal")
-                return "WORLD_RESET"
-            continue
-        }
-
         ; Any other biome? -> world cycled.
         otherBiome := false
         for kw, def in BiomeByKeyword
@@ -2166,12 +2373,6 @@ MonitorTargetBiome()
         {
             UpdateOCRResult("Boss '" . bossObj.name . "' spawned - leaving biome.")
             return "LEAVE_BIOME"
-        }
-        
-        if (TargetBiomeDef.HasProp("autoAttack") && TargetBiomeDef.autoAttack)
-        {
-            seqName := TargetBiomeDef.HasProp("attackSequence") ? TargetBiomeDef.attackSequence : "default"
-            StartAutoAttack(seqName)
         }
         
         ; Start auto-attack if this biome is flagged for it and we aren't
@@ -2445,6 +2646,169 @@ GetBossBarRect()
         w: Round(A_ScreenWidth * 0.50),
         h: Round(A_ScreenHeight * 0.24)
     }
+}
+
+; ============================================================
+; ORENGA PRIORITY DETECTION
+;
+; Orenga is a roaming boss that is NOT announced in chat - the only
+; way to detect it is via the boss health bar at the bottom of the
+; screen. Because it's extremely rare and highly desirable, we check
+; for it on every loop iteration BEFORE any biome or boss decision.
+;
+; On detection: ping Discord and pause the macro so a bad-biome rejoin
+; can't yank us out of the server before the player responds.
+; ============================================================
+; ============================================================
+; ORENGA PIXEL COLOR CHECK
+;
+; Orenga's HP bar is a distinctive orange (#E17814, RGB 225 120 20).
+; No other boss in the game uses that exact color, so we can scan a
+; few horizontal lines inside the boss-bar region and look for it.
+;
+; This runs as a second signal on top of the OCR name check, in case
+; the stylized font confuses OCR on a specific render.
+; ============================================================
+
+IsOrengaBarVisible()
+{
+    targetR := 225
+    targetG := 120
+    targetB := 20
+    tol := 35       ; per-channel tolerance, covers antialiasing + D3D variance
+
+    bossRect := GetBossBarRect()
+
+    ; The bar sits a little below the boss name text. From the region
+    ; returned by GetBossBarRect, the bar is roughly 45-65% down.
+    ; We scan 5 horizontal lines in that range and take any hit.
+    xStart := bossRect.x + Round(bossRect.w * 0.30)
+    xEnd   := bossRect.x + Round(bossRect.w * 0.70)
+
+    Loop 5
+    {
+        yFrac := 0.45 + (A_Index - 1) * (0.20 / 4)
+        y := bossRect.y + Round(bossRect.h * yFrac)
+
+        matches := 0
+        samples := 0
+        x := xStart
+        while (x <= xEnd)
+        {
+            c := PixelGetColor(x, y, "RGB")
+            r := (c >> 16) & 0xFF
+            g := (c >> 8)  & 0xFF
+            b :=  c        & 0xFF
+
+            ; Skip near-black so chat shadow / letterboxing doesn't count.
+            if !(r < 30 && g < 30 && b < 30)
+            {
+                samples += 1
+                if (Abs(r - targetR) <= tol
+                &&  Abs(g - targetG) <= tol
+                &&  Abs(b - targetB) <= tol)
+                    matches += 1
+            }
+            x += 6
+        }
+
+        ; Bar fills left to right. 30% orange on a line is a clear hit
+        ; even if the boss is heavily damaged.
+        if (samples >= 8 && matches / samples > 0.30)
+            return true
+    }
+
+    return false
+}
+
+CheckForOrenga(force := false)
+{
+    global OrengaLastDetectTick, OrengaDetectCooldownMs, OrengaKeywords
+
+    ; Rate limit: OCR is fast but not free. 5x/second is plenty.
+    if !force && (A_TickCount - OrengaLastDetectTick < OrengaDetectCooldownMs)
+        return false
+    OrengaLastDetectTick := A_TickCount
+
+    ; --- 1) OCR the boss-name text ---
+    try
+    {
+        bossRect := GetBossBarRect()
+        result := OCR.FromRect(bossRect.x, bossRect.y, bossRect.w, bossRect.h, {lang: "en-US"})
+        if (result.Text != "")
+        {
+            low := StrLower(result.Text)
+            for kw in OrengaKeywords
+                if InStr(low, kw)
+                    return true
+        }
+    }
+    catch
+    {
+    }
+
+    ; --- 2) Fall back to the orange bar color ---
+    ; Catches cases where OCR mangled the name beyond recognition.
+    if IsOrengaBarVisible()
+        return true
+
+    return false
+}
+
+HandleOrengaFound()
+{
+    global MacroPaused, OrengaAlertActive, PauseButton, MacroMode
+
+    ; Always ensure paused, even on repeat calls.
+    MacroPaused := true
+    try PauseButton.Text := "RESUME"
+
+    ; Only fire the Discord ping + status change once per spawn.
+    if OrengaAlertActive
+        return
+
+    OrengaAlertActive := true
+
+    NotifyOrenga()
+
+    UpdateStatus("ORENGA FOUND!", "Paused - check Discord")
+    UpdateOCRResult(
+        "🚨 ORENGA DETECTED 🚨`n"
+        . "The script has paused so a rejoin cannot lose it.`n"
+        . "Discord ping sent - get to this server.`n"
+        . "Press F6 (or RESUME) when ready to continue."
+    )
+}
+
+NotifyOrenga()
+{
+    global DiscordWebhookURL, PrivateServerLink
+    global SecondaryWebhookURL, SecondaryEnabled
+    global OrengaRoleID, LastBossNotifyTick
+
+    msg :=
+        "🚨🚨 **ORENGA HAS SPAWNED!** 🚨🚨`n"
+        . "Priority alert - script paused, get in now.`n"
+
+    link := Trim(PrivateServerLink)
+    if (link != "" && link != "PASTE_YOUR_PRIVATE_SERVER_LINK_HERE")
+        msg .= "`n" . link
+
+    ; Primary server
+    if (Trim(DiscordWebhookURL) != "" && DiscordWebhookURL != "PASTE_NEW_DISCORD_WEBHOOK_HERE")
+        try SendDiscordWebhook(DiscordWebhookURL, msg, OrengaRoleID)
+
+    ; Secondary server (if enabled)
+    if SecondaryEnabled
+    {
+        secURL := Trim(SecondaryWebhookURL)
+        if (secURL != "" && secURL != "PASTE_SECONDARY_WEBHOOK_HERE")
+            try SendDiscordWebhook(secURL, msg, "")
+    }
+
+    ; Stamp the standard boss cooldown so the normal boss-bar path
+    ; doesn't fire a second ping for the same spawn.
+    LastBossNotifyTick["Orenga"] := A_TickCount
 }
 
 ; ============================================================
@@ -2786,28 +3150,106 @@ RejoinRoblox()
     global SafeClickX, SafeClickY, SafeClickRelX, SafeClickRelY, SafeClickConfigured
     global RobloxLaunchTimeout
 
+    ; Priority safety: refuse to rejoin while Orenga is on the boss bar.
+    ; Use force := true to bypass the OCR rate limit - we want a real
+    ; check right here, right now.
+    if CheckForOrenga(true)
+    {
+        HandleOrengaFound()
+        return false
+    }
+
     if !MacroRunning
         return false
 
     UpdateStatus("REJOINING", "Server hop")
 
-    ; 1) Close Roblox.
-    hwnd := WinExist("ahk_exe RobloxPlayerBeta.exe")
-    if hwnd
+    ; ---- Fast path: Ctrl+R the browser tab that has the join page. ----
+    ; This is much quicker than closing Roblox, re-activating the browser,
+    ; clicking Join, and waiting for launch. If the browser tab can't be
+    ; found or the refresh doesn't produce a Roblox launch, we fall
+    ; through to the click-Join path below (Roblox is already closed by
+    ; the time TryCtrlRRejoin returns false).
+    if TryNavigateAndJoin()
     {
-        try WinClose("ahk_id " . hwnd)
+        try WinActivate("ahk_exe RobloxPlayerBeta.exe")
         catch
         {
         }
+        WinWaitActive("ahk_exe RobloxPlayerBeta.exe", , 1.0)
+        Sleep(2000)
 
-        ; Wait only until the old Roblox window disappears.
-        closeDeadline := A_TickCount + 2500
-        while MacroRunning && WinExist("ahk_exe RobloxPlayerBeta.exe") && A_TickCount < closeDeadline
-            Sleep(20)
+        ; Force fullscreen on whichever monitor was selected.
+        robloxHwnd := WinExist("ahk_exe RobloxPlayerBeta.exe")
+        if robloxHwnd
+        {
+            mon := GetMonitorBounds()
+            Loop 2
+            {
+                WinGetPos(&rx, &ry, &rw, &rh, "ahk_id " . robloxHwnd)
+                if (rw >= mon.w - 5 && rh >= mon.h - 5)
+                    break
+                try WinActivate("ahk_id " . robloxHwnd)
+                Send("{F11}")
+                Sleep(600)
+            }
+        }
+
+        ; Same Play-button logic as the click path.
+        SetTimer(AntiAfkTick, 5000)
+        playFound := false
+        phase1Deadline := A_TickCount + RobloxLaunchTimeout
+        while (A_TickCount < phase1Deadline)
+        {
+            if !MacroRunning
+                return false
+            if MacroPaused
+            {
+                Sleep(200)
+                continue
+            }
+            if IsPlayButtonVisible()
+            {
+                playFound := true
+                break
+            }
+            UpdateOCRResult("URL rejoin - waiting for Play button... ("
+                          . Round((phase1Deadline - A_TickCount) / 1000) . "s left)")
+            Sleep(150)
+        }
+
+        if playFound
+        {
+            UpdateOCRResult("Play button visible - clicking...")
+            ActivateRoblox()
+            Sleep(120)
+            MouseMove(PlayButtonX, PlayButtonY, 0)
+            Sleep(120)
+            MouseMove(PlayButtonX + 1, PlayButtonY + 1, 0)
+            Sleep(60)
+            Click("Left")
+
+            disappearDeadline := A_TickCount + 6000
+            while (A_TickCount < disappearDeadline)
+            {
+                if !MacroRunning
+                    return false
+                if !IsPlayButtonVisible()
+                    break
+                Sleep(100)
+            }
+
+            Sleep(2500)
+            FocusRobloxChat()
+            UpdateStatus("RUNNING", MacroMode)
+            UpdateOCRResult("Rejoined via URL - in world.")
+            return true
+        }
+
+        ; Refresh happened but Play never showed. Fall through to the
+        ; click-Join path. Roblox is already closed at this point.
+        UpdateOCRResult("URL rejoin didn't reach Play screen - trying click-Join...")
     }
-
-    if !MacroRunning
-        return false
 
     ; 2) Activate the captured browser window.
     browserHwnd := FindJoinWindow()
@@ -2896,7 +3338,7 @@ RejoinRoblox()
 
     ; Give Roblox a moment to finish opening before checking its window
     ; size.
-    Sleep(2000)
+    Sleep(1200)
 
     ; Force fullscreen every time. Roblox sometimes opens as a small,
     ; windowed square instead of covering the screen, which throws off
@@ -2906,15 +3348,13 @@ RejoinRoblox()
     robloxHwnd := WinExist("ahk_exe RobloxPlayerBeta.exe")
     if robloxHwnd
     {
-        MonitorGet(MonitorGetPrimary(), &monLeft, &monTop, &monRight, &monBottom)
-        screenW := monRight - monLeft
-        screenH := monBottom - monTop
+        mon := GetMonitorBounds()
 
         Loop 2
         {
             WinGetPos(&rx, &ry, &rw, &rh, "ahk_id " . robloxHwnd)
-            if (rw >= screenW - 5 && rh >= screenH - 5)
-                break  ; already covers the full screen
+            if (rw >= mon.w - 5 && rh >= mon.h - 5)
+                break
 
             try WinActivate("ahk_id " . robloxHwnd)
             Send("{F11}")
@@ -3007,8 +3447,8 @@ RejoinRoblox()
             break
         }
 
-        UpdateOCRResult("Waiting for Play button... ("
-                      . Round((phase1Deadline - A_TickCount) / 1000) . "s left)")
+        UpdateOCRResult("URL rejoin - waiting for Play button... ("
+                        . Round((phase1Deadline - A_TickCount) / 1000) . "s left)")
         Sleep(150)
     }
 
@@ -3047,14 +3487,154 @@ RejoinRoblox()
         Sleep(100)
     }
 
-    ; ---- Phase 4: short grace period. The world needs a moment to
-    ; finish rendering before chat scanning is meaningful. ----
-    Sleep(2500)
+    ; ---- Phase 4: grace period. ----
+    Sleep(1500)
 
     FocusRobloxChat()
     UpdateStatus("RUNNING", MacroMode)
     UpdateOCRResult("Rejoined successfully - in world.")
     return true
+}
+
+; ============================================================
+; CTRL+R REJOIN
+;
+; Instead of closing Roblox and re-clicking Join, we refresh the
+; browser tab that has the private server link. Roblox's join page
+; reloads and re-triggers the launch automatically.
+;
+; Falls back to the close-and-click flow if:
+;   - Roblox is still running after the refresh (launch failed)
+;   - The browser window can't be found
+; ============================================================
+
+; ============================================================
+; FAST REJOIN VIA URL NAVIGATION
+;
+; Instead of relying on a browser tab that's already on the private
+; server page, we focus the browser, jump the URL bar, type the
+; private server link, and press Enter. This works no matter what the
+; browser was showing before, as long as the browser is running.
+;
+; Then we wait for Roblox to launch, same as the click-Join path.
+; Falls back to click-Join if anything goes wrong.
+; ============================================================
+
+; ============================================================
+; FAST REJOIN VIA URL LAUNCH
+;
+; Approach borrowed from MrToaster's script:
+;   1) Close Roblox.
+;   2) If a browser window with "Roblox" in its title exists,
+;      activate it and Ctrl+R it.
+;   3) Otherwise, Run the URL - Windows routes it to the default
+;      browser and the private server page loads.
+;   4) Wait for Roblox to appear.
+;
+; Then the caller clicks Play, same as the click-Join path.
+; ============================================================
+
+TryNavigateAndJoin()
+{
+    global MacroRunning, RobloxLaunchTimeout, PrivateServerLink
+    global JoinWindowExe
+
+    link := Trim(PrivateServerLink)
+    if (link = "" || link = "PASTE_YOUR_PRIVATE_SERVER_LINK_HERE")
+        return false
+
+    ; ---- 1) Close Roblox ----
+    hwnd := WinExist("ahk_exe RobloxPlayerBeta.exe")
+    if hwnd
+    {
+        try WinClose("ahk_id " . hwnd)
+        catch
+        {
+        }
+        closeDeadline := A_TickCount + 2500
+        while MacroRunning && WinExist("ahk_exe RobloxPlayerBeta.exe") && A_TickCount < closeDeadline
+            Sleep(20)
+    }
+
+    if !MacroRunning
+        return false
+
+    ; ---- 2) Look for an existing Roblox browser tab and Ctrl+R it ----
+    refreshed := false
+    try
+    {
+        hwnds := WinGetList("ahk_exe " . JoinWindowExe)
+        for hwnd in hwnds
+        {
+            title := ""
+            try title := WinGetTitle("ahk_id " . hwnd)
+            if (title != "" && InStr(StrLower(title), "roblox"))
+            {
+                WinActivate("ahk_id " . hwnd)
+                Sleep(300)
+                Send("^r")
+                refreshed := true
+                break
+            }
+        }
+    }
+    catch
+    {
+    }
+
+    ; ---- 3) If no Roblox tab found, Run the URL fresh ----
+    ; The URL may or may not launch Roblox directly depending on its
+    ; format. Share links usually land on a page with a Play button;
+    ; game-instances links may auto-launch. Either way, we wait below.
+    if !refreshed
+    {
+        try Run(link)
+        catch
+            return false
+    }
+
+    ; ---- 4) Wait for Roblox to launch ----
+    launchDeadline := A_TickCount + RobloxLaunchTimeout
+    while MacroRunning && A_TickCount < launchDeadline
+    {
+        if WinExist("ahk_exe RobloxPlayerBeta.exe")
+            break
+        Sleep(40)
+    }
+
+    if !MacroRunning
+        return false
+
+    return WinExist("ahk_exe RobloxPlayerBeta.exe")
+}
+
+GetMonitorBounds(idx := 0)
+{
+    if (idx = 0)
+    {
+        global SelectedMonitor
+        idx := SelectedMonitor
+    }
+    MonitorGet(idx, &left, &top, &right, &bottom)
+    return { x: left, y: top, w: right - left, h: bottom - top }
+}
+
+LoadMonitorSelection()
+{
+    global SelectedMonitor, ConfigFile
+
+    if FileExist(ConfigFile)
+    {
+        try
+        {
+            v := IniRead(ConfigFile, "Display", "Monitor", "1")
+            SelectedMonitor := Integer(v)
+        }
+    }
+
+    maxMon := MonitorGetCount()
+    if (SelectedMonitor < 1 || SelectedMonitor > maxMon)
+        SelectedMonitor := 1
 }
 
 StartAutoAttack(sequenceName := "default")
@@ -4038,22 +4618,30 @@ TogglePause(*)
     global MacroPaused
     global MacroMode
     global PauseButton
+    global OrengaAlertActive
 
-    if !MacroRunning
-        return
-
+    ; Always allow toggling, even if the macro isn't running.
+    ; This lets you clear an Orenga alert that was triggered while
+    ; sitting idle, without having to restart the whole script.
     MacroPaused := !MacroPaused
 
     if MacroPaused
     {
         StopAutoAttack()
-        PauseButton.Text := "RESUME"
-        UpdateStatus("PAUSED", MacroMode)
+        try PauseButton.Text := "RESUME"
+        UpdateStatus("PAUSED", MacroRunning ? MacroMode : "None")
     }
     else
     {
-        PauseButton.Text := "PAUSE"
-        UpdateStatus("RUNNING", MacroMode)
+        ; Clearing the pause also clears the Orenga alert flag so a fresh
+        ; spawn can fire a fresh ping later.
+        OrengaAlertActive := false
+
+        try PauseButton.Text := "PAUSE"
+        if MacroRunning
+            UpdateStatus("RUNNING", MacroMode)
+        else
+            UpdateStatus("IDLE", "None")
     }
 }
 
@@ -4070,6 +4658,7 @@ StopMacro(*)
     global TargetBiomeActive, TargetBiomeKeyword, TargetBiomeName
     global TargetBiomeStartedTick, TargetChatBaseline
     global BadBiomeSeenCount, BadBiomeSeenId
+    global OrengaAlertActive
     global PauseButton
 
     MacroRunning := false
@@ -5925,7 +6514,7 @@ AntiAfkTick()
 
     ; Send a harmless keystroke that Roblox won't act on as a real input.
     ; Shift alone doesn't toggle anything in-game but resets the idle timer.
-    Send("{Shift}")
+    Send("{Ctrl}")
 
     AntiAfkLastDir := -AntiAfkLastDir
     LastAntiAfkTick := A_TickCount
@@ -5996,3 +6585,33 @@ WatchdogTick()
 ^!z::StageLastBoss()    ; Ctrl+Alt+z - stage last boss for CRCW
 ^!w::StageLastBiome()   ; Ctrl+Alt+W - stage last biome for CRCW
 ^+a::ToggleAutoAttackManual()   ; Ctrl+Shift+A toggles AA on/off
+^!o::TestOrengaAlert()   ; Ctrl+Alt+O — fires the Orenga alert as if detected
+
+TestOrengaAlert()
+{
+    global OrengaAlertActive
+    OrengaAlertActive := false
+    HandleOrengaFound()
+}
+
+^!b::ShowBossBarOCR()   ; Ctrl+Alt+B — dump what the boss-bar OCR sees
+
+ShowBossBarOCR()
+{
+    try
+    {
+        bossRect := GetBossBarRect()
+        r := OCR.FromRect(bossRect.x, bossRect.y, bossRect.w, bossRect.h, {lang: "en-US"})
+        MsgBox(
+            "Boss bar region:`n"
+            . "x=" . bossRect.x . "  y=" . bossRect.y . "`n"
+            . "w=" . bossRect.w . "  h=" . bossRect.h . "`n`n"
+            . "OCR text:`n[" . r.Text . "]",
+            "Boss Bar OCR"
+        )
+    }
+    catch Error as err
+    {
+        MsgBox("Failed: " . err.Message, "Boss Bar OCR")
+    }
+}
