@@ -34,19 +34,19 @@ your main PC and on RDPs at the same time (will explain more in video tutorial, 
 - **Discord notifications** — pings a role or user with the biome, boss, and your private server link
 - **Auto-hop** — rejoins your private server when a bad biome appears, until a good one shows up
 - **Camp-on-good** — stays put and pings you when a rare biome appears, resets when the biome returns to normal
-- **Ore pings** — optional pings for ore spawns like Ultimus and Rainbowite (shoutout Skittlz for this idea)
+- **Ore pings** — optional pings for ore spawns like Ultimus and Rainbowite (shoutout Skittlz for this idea) ⚠️ *Work in progress — test on an alt before relying on it.*
 - **Auto-attack** — optional attack sequence that runs while camping a biome. Sequences live in `attack_sequences.txt` and are editable via **Tools → Edit Attack Sequences**. ⚠️ *Work in progress — test on an alt before relying on it.*
 - **Watchdog** — pings you on Discord if the script gets stuck and needs a manual check
-- **Priority boss override** — if Orenga (or any boss flagged as priority) spawns, the script stops immediately and pings you on Discord, even if it was about to rejoin out of a bad biome
+- **Priority boss override** — if Orenga (or any boss flagged as priority) spawns, the script stops immediately and pings you on Discord, even if it was about to rejoin out of a bad biome ⚠️ *Work in progress — test on an alt before relying on it.*
 
 ## Required / Optional
 
 - **Windows 10 or 11**
 - **AutoHotkey v2.0 or newer** — [download](https://www.autohotkey.com/v2/)
 - **Roblox Account Manager** — OR any browser you use to open the private server link (Chrome, Firefox, etc.)
-- **Discord webhook** — for notifications (optional but recommended)
+- **Discord webhook** — for notifications (optional but recommended, this is what I personally use so I know ASAP and I can ping people)
 
-## Hotkeys (technically is changeable via code but not via GUI iirc)
+## Hotkeys (technically is changeable via code but not via GUI if I remember right)
 
 | Key | Action |
 |---|---|
