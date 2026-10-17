@@ -172,16 +172,6 @@ You can tweak this any time.
 
 ---
 
-## Step 8 — Choose ores (optional)
-
-1. **Tools → Select Ores to Notify...**
-2. Click a row to toggle between NOTIFY and IGNORE
-3. Close — changes save automatically
-
-Now you'll get pinged whenever one of those ores spawns in the mines.
-
----
-
 ## Step 9 — Start hopping
 
 1. Make sure Roblox is open and you're in the private server
@@ -193,10 +183,6 @@ The script will:
 3. If it sees a bad biome → close Roblox, rejoin the private server,
    and check again
 4. If a boss spawns and the biome is marked GOOD → send a boss ping
-5. **Priority boss override** — if Orenga (or any boss flagged as `priority`)
-   spawns, the script stops immediately, pauses hopping, and pings you on
-   Discord. This fires even if the script was about to rejoin out of a bad
-   biome, so you never lose the spawn to an auto-hop.
 
 Watch the **LAST OCR RESULT** box to see what the script is reading.
 

@@ -20,6 +20,8 @@ your main PC and on RDPs at the same time (will explain more in video tutorial, 
 6. Open **Tools → Capture Join Window**, **Capture Join Click**, **Capture Play Button** and follow the on-screen prompts (one-time setup per account)
 7. Press **F9** to start hopping
 
+Multiple RDPs: Included in the zip is `rdp_manager.ahk`. Run this on your host PC to automatically tile and organize your RDP windows. Press Ctrl+Alt+M to select the monitor, and F2 to tile them.
+
 **Full setup walkthrough →** [docs/first-run.md](docs/first-run.md)
 **Video tutorial →** *(coming soon)*
 **Latest release →** [github.com/Jaisuhn/ChoerryProBiomeHopper/releases/latest](https://github.com/Jaisuhn/ChoerryProBiomeHopper/releases/latest)
@@ -34,10 +36,8 @@ your main PC and on RDPs at the same time (will explain more in video tutorial, 
 - **Discord notifications** — pings a role or user with the biome, boss, and your private server link
 - **Auto-hop** — rejoins your private server when a bad biome appears, until a good one shows up
 - **Camp-on-good** — stays put and pings you when a rare biome appears, resets when the biome returns to normal
-- **Ore pings** — optional pings for ore spawns like Ultimus and Rainbowite (shoutout Skittlz for this idea)
 - **Auto-attack** — optional attack sequence that runs while camping a biome. Sequences live in `attack_sequences.txt` and are editable via **Tools → Edit Attack Sequences**. ⚠️ *Work in progress — test on an alt before relying on it.*
 - **Watchdog** — pings you on Discord if the script gets stuck and needs a manual check
-- **Priority boss override** — if Orenga (or any boss flagged as priority) spawns, the script stops immediately and pings you on Discord, even if it was about to rejoin out of a bad biome
 
 ## Required / Optional
 
@@ -59,8 +59,6 @@ your main PC and on RDPs at the same time (will explain more in video tutorial, 
 | **Ctrl+Alt+T** | Debug: show OCR scan results |
 | **Ctrl+Shift+A** | Toggle auto-attack manually |
 | **Ctrl+Shift+1..4** | Manual hop for multi-RDP setups |
-| **Ctrl+Alt+O** | Test: fire the Orenga alert |
-| **Ctrl+Alt+B** | Debug: dump the boss-bar OCR text |
 | **Ctrl+Alt+Z** | Stage the last boss for the CRCW Discord |
 | **Ctrl+Alt+W** | Stage the last biome for the CRCW Discord |
 

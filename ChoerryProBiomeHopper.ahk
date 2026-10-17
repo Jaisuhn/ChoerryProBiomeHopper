@@ -33,13 +33,6 @@ SetMouseDelay(-1)
 ; ============================================================
 global PanelRegistry := Map()
 global ViewMenuObj := 0
-global BiomeSelectorGui := 0
-global AttackEditorGui := 0
-global OreSelectorGui := 0
-global DiscordConfigGui := 0
-global LuckCalcGui := 0
-global SelectedMonitor := 1
-global LastErrorCheckTick := 0 ; used by the currently disabled error-screen check. may be relevant later.
 
 global WatchdogLastStatus := ""
 global WatchdogLastStatusChangeTick := 0
@@ -48,19 +41,11 @@ global WatchdogAlertSent := false
 global BiomeNotifyCooldownMs := 60000        ; 1 minute
 global LastBiomeNotifyTick := Map()          ; biome id -> last notify A_TickCount
 global LastBossNotifyTick := Map()
+global LastErrorCheckTick := 0
 
 global MacroRunning := false
 global MacroPaused := false
 global MacroMode := ""
-
-; ---- Orenga (priority roaming boss) ----
-global OrengaAlertActive := false
-global OrengaLastDetectTick := 0
-global OrengaDetectCooldownMs := 500     ; rate-limit OCR to 5x/second
-; Match on a set of fragments so common OCR misreads still hit.
-; Each of these is unlikely to appear in any other boss name.
-global OrengaKeywords := ["oreng", "0reng", "oren9", "0ren9", "oreng4"]
-global OrengaRoleID := "1545938717594620045" ;insert your own role ID for Orenga
 
 global AutoAttackEnabled := false
 global AutoAttackIntervalMs := 80    ; clicks per interval
@@ -80,6 +65,7 @@ global CommunityAutoStage := true
 global ErrorCheckRegion := { x: 0, y: 0, w: 0, h: 0 }   ; computed on demand
 
 global BadBiomeSeenCount := 0
+global BadBiomeSeenId := ""
 
 ; Original OCR defaults from your script.
 global OCR_X := 12
@@ -137,7 +123,7 @@ global SafeClickRelX := -1
 global SafeClickRelY := -1
 global SafeClickConfigured := false
 global RobloxLaunchTimeout := 60000
-global ChatFocusInterval := 4000
+global ChatFocusInterval := 5000
 global LastChatFocusTick := 0
 
 global UsernameFieldX := 0
@@ -382,10 +368,10 @@ global BiomeDefs := [
     { id: "pirate",     keywords: ["pirate army"],              biomeName: "A pirate army is attacking!",       roleID: "", defaultGood: false, bosses: [] },
 
     ; ============================================================
-    ; Defaults to GOOD: on a fresh server the script enters TARGET BIOME
-    ; mode and camps `normal`, pinging if a boss spawns and rejoining when
-    ; a boss with leave:true appears. Flip to IGNORED if you'd rather the
-    ; script keep hopping regardless.
+    ; DEFAULT STATE  (shown after rejoining and after every boss kill)
+    ; Defaults to IGNORED so it doesn't trigger an infinite rejoin loop.
+    ; Flip to GOOD in the Biome Selector if you want to camp it for
+    ; nacker / Medusa / Zeus / etc.
     ; ============================================================
         { id: "normal", keywords: ["world has returned to normal"], biomeName: "The world has returned to normal.",
       roleID: "", defaultStatus: "good", autoAttack: true, attackSequence: "autoswing",
@@ -401,67 +387,8 @@ global BiomeDefs := [
 ]
 
 ; Ore spawn names would otherwise false-positive on "has spawned".
-; ============================================================
-; ORE DEFINITIONS
-; ============================================================
-global OreDefs := [
-    { id: "iron",          name: "Iron",              keywords: ["iron"],           roleID: "", defaultNotify: false },
-    { id: "optimum",       name: "Optimum",           keywords: ["optimum"],        roleID: "", defaultNotify: true  },
-    { id: "ultimus",       name: "Ultimus",           keywords: ["ultimus"],        roleID: "", defaultNotify: true  },
-    { id: "pure_vermite",  name: "Pure Vermite",      keywords: ["pure vermite"],   roleID: "", defaultNotify: true  },
-    { id: "pure_amber",    name: "Pure Amberstone",   keywords: ["pure amberstone"],roleID: "", defaultNotify: true  },
-    { id: "destinium",     name: "Destinium",         keywords: ["destinium"],      roleID: "", defaultNotify: true  },
-    { id: "rainbowite",    name: "Rainbowite",        keywords: ["rainbowite"],     roleID: "", defaultNotify: true  },
-    { id: "salt",          name: "Salt",              keywords: ["salt"],           roleID: "", defaultNotify: false },
-    { id: "black_vermite", name: "Black Vermite",     keywords: ["black vermite"],  roleID: "", defaultNotify: true  },
-    { id: "chaotic_ore",   name: "Chaotic Ore",       keywords: ["chaotic ore"],    roleID: "", defaultNotify: true  },
-    { id: "strange_ore",   name: "A Strange Ore",     keywords: ["a strange ore"],  roleID: "", defaultNotify: true  }
-]
-
-; Derived from OreDefs - kept for backwards-compat with boss filtering.
-global OreSpawnNames := []
-for def in OreDefs
-    for kw in def.keywords
-        OreSpawnNames.Push(kw)
-
-global OreNotifyEnabled := Map()
-global LastOreNotifyTick := Map()
-global OreByKeyword := Map()
-
-BuildOreLookups()
-{
-    global OreDefs, OreByKeyword
-    OreByKeyword := Map()
-    for def in OreDefs
-        for kw in def.keywords
-            OreByKeyword[StrLower(kw)] := def
-}
-
-LoadOreChoices()
-{
-    global OreDefs, OreNotifyEnabled, ConfigFile
-    for def in OreDefs
-        OreNotifyEnabled[def.id] := def.defaultNotify
-    if !FileExist(ConfigFile)
-        return
-    for def in OreDefs
-    {
-        try
-        {
-            v := IniRead(ConfigFile, "Ores", def.id, "")
-            if (v = "notify")
-                OreNotifyEnabled[def.id] := true
-            else if (v = "ignore")
-                OreNotifyEnabled[def.id] := false
-        }
-    }
-}
-
-SaveOreChoice(id, state)
-{
-    global ConfigFile
-    try IniWrite(state, ConfigFile, "Ores", id)   ; state: "notify" | "ignore"
-}
+global OreSpawnNames := ["iron", "optimum", "ultimus", "pure vermite", "pure amberstone",
+                         "destinium", "rainbowite", "salt", "black vermite", "chaotic ore", "a strange ore"]
 
 ; Runtime state.
 global BiomeGood := Map()   ; id -> true/false
@@ -570,7 +497,7 @@ StageCommunityBossPing(bossObj)
 
     A_Clipboard := msg
     UpdateOCRResult("📋 Copied to clipboard:`n`n" . msg)
-    UpdateOCRResult("📋 Copied to clipboard - paste into Discord.")
+    UpdateDiscordStatus("📋 Copied to clipboard - paste into Discord.")
     return true
 }
 
@@ -590,7 +517,7 @@ StageCommunityBiomePing(biomeDef)
 
     A_Clipboard := msg
     UpdateOCRResult("📋 Copied to clipboard:`n`n" . msg)
-    UpdateOCRResult("📋 Copied to clipboard - paste into Discord.")
+    UpdateDiscordStatus("📋 Copied to clipboard - paste into Discord.")
     return true
 }
 
@@ -625,179 +552,6 @@ BuildBiomeLookups()
             BiomeByKeyword[StrLower(kw)] := def
 }
 
-; ============================================================
-; GLOBAL BOSSES
-;
-; Bosses that can spawn in ANY biome (roaming / event bosses).
-; Rather than duplicating these entries in every biome's boss list,
-; we inject them at startup so the existing detection code finds them
-; no matter which biome you're in or scanning.
-;
-; To add another roaming boss later, just append to GlobalBosses.
-; ============================================================
-
-global GlobalBosses := [
-    { name: "Orenga", keywords: ["orenga"], roleID: "1543785808178184202", notify: true, leave: false, isGlobal: true, priority: true}
-]
-
-InjectGlobalBosses()
-{
-    global BiomeDefs, GlobalBosses
-
-    for def in BiomeDefs
-    {
-        for gb in GlobalBosses
-        {
-            ; Skip if the biome already has this boss defined explicitly.
-            already := false
-            for bossObj in def.bosses
-            {
-                if (bossObj.name = gb.name)
-                {
-                    already := true
-                    break
-                }
-            }
-            if !already
-                def.bosses.Push(gb)
-        }
-    }
-}
-
-; ============================================================
-; PRIORITY BOSS DETECTION
-;
-; A priority boss (Orenga etc.) overrides ALL other logic. When
-; detected, the script:
-;   1. Fires a Discord ping immediately
-;   2. Stops the macro entirely
-;   3. Cancels any pending rejoin
-;
-; Detection uses a tight scan region for the boss name so it can
-; run every ~100ms without slowing the main loop. It also checks
-; chat as a fallback in case the bar hasn't rendered yet.
-; ============================================================
-
-GetBossNameRect()
-{
-    try
-    {
-        hwnd := WinExist("ahk_exe RobloxPlayerBeta.exe")
-        if hwnd
-        {
-            WinGetPos(&wx, &wy, &ww, &wh, "ahk_id " . hwnd)
-            return {
-                x: wx + Round(ww * 0.35),
-                y: wy + Round(wh * 0.70),
-                w: Round(ww * 0.30),
-                h: Round(wh * 0.10)
-            }
-        }
-    }
-    catch
-    {
-    }
-    return {
-        x: Round(A_ScreenWidth * 0.35),
-        y: Round(A_ScreenHeight * 0.70),
-        w: Round(A_ScreenWidth * 0.30),
-        h: Round(A_ScreenHeight * 0.10)
-    }
-}
-
-CheckPriorityBoss()
-{
-    global GlobalBosses, ChatOCR_X, ChatOCR_Y, ChatOCR_WIDTH, ChatOCR_HEIGHT
-
-    if !IsObject(GlobalBosses)
-        return ""
-
-    ; --- 1) Boss name strip — fast, small region ---
-    nameText := ""
-    try
-    {
-        r := GetBossNameRect()
-        res := OCR.FromRect(r.x, r.y, r.w, r.h, {lang: "en-US"})
-        nameText := StrLower(res.Text)
-    }
-    catch
-    {
-    }
-
-    if (nameText != "")
-    {
-        for gb in GlobalBosses
-        {
-            if !(gb.HasProp("priority") && gb.priority)
-                continue
-            for kw in gb.keywords
-            {
-                if InStr(nameText, kw)
-                    return gb
-            }
-        }
-    }
-
-    ; --- 2) Chat fallback, in case the bar hasn't rendered yet ---
-    chatText := ""
-    try
-    {
-        res := OCR.FromRect(ChatOCR_X, ChatOCR_Y, ChatOCR_WIDTH, ChatOCR_HEIGHT, {lang: "en-US"})
-        chatText := StrLower(res.Text)
-    }
-    catch
-    {
-    }
-
-    if (chatText != "")
-    {
-        for gb in GlobalBosses
-        {
-            if !(gb.HasProp("priority") && gb.priority)
-                continue
-            for kw in gb.keywords
-            {
-                if InStr(chatText, kw)
-                    return gb
-            }
-        }
-    }
-
-    return ""
-}
-
-HandlePriorityBoss(bossDef)
-{
-    global MacroRunning, PrivateServerLink, DiscordWebhookURL
-    global MacroMode
-
-    ; Fire the ping FIRST, before anything else can interfere.
-    if (Trim(DiscordWebhookURL) != ""
-    &&  DiscordWebhookURL != "PASTE_NEW_DISCORD_WEBHOOK_HERE")
-    {
-        msg := "🚨🚨 **PRIORITY BOSS SPAWNED: " . bossDef.name . "** 🚨🚨`n`n"
-             . "The script has **STOPPED**. Get in-game ASAP."
-
-        link := Trim(PrivateServerLink)
-        if (link != "" && link != "PASTE_YOUR_PRIVATE_SERVER_LINK_HERE")
-            msg .= "`n" . link
-
-        try SendDiscordWebhook(DiscordWebhookURL, msg, bossDef.roleID)
-    }
-
-    ; Halt everything.
-    StopAutoAttack()
-    SetTimer(AntiAfkTick, 0)
-    SetTimer(WatchdogTick, 0)
-    MacroRunning := false
-
-    UpdateStatus("PRIORITY BOSS", bossDef.name)
-    UpdateOCRResult(
-        "!!! PRIORITY BOSS DETECTED: " . bossDef.name . " !!!`n`n"
-        . "Script has been STOPPED. Rejoin flow cancelled.`n`n"
-        . "Get into the game now - the server is still open."
-    )
-}
 
 ; ============================================================
 ; COLOR-AWARE CHAT LINE CLASSIFICATION
@@ -923,50 +677,6 @@ FindChatEvent(lines)
 ; ------------------------------------------------------------
 ; Small helpers used by the rest of the script.
 ; ------------------------------------------------------------
-RebuildBiomeList(lv)
-{
-    global BiomeDefs, BiomeGood, BiomeBad
-
-    lv.Delete()
-
-    for def in BiomeDefs
-    {
-        label := def.biomeName
-        if (def.bosses.Length > 0)
-        {
-            bossNames := ""
-            for bossObj in def.bosses
-            {
-                if (bossNames != "")
-                    bossNames .= ", "
-                bossNames .= bossObj.name
-            }
-            label .= "   —   " . bossNames
-        }
-
-        status := ""
-        if BiomeGood[def.id]
-            status := "GOOD"
-        else if BiomeBad[def.id]
-            status := "BAD"
-        else
-            status := "IGNORED"
-
-        lv.Add("", label, status)
-    }
-}
-
-ForceClassicListViewTheme(lv)
-{
-    ; Tell Windows to render this ListView using the classic (light) theme
-    ; instead of the current system theme. This makes the selection
-    ; highlight use black-on-light-blue, which is always readable, and
-    ; avoids the dark-mode "black on black" bug on Windows 11.
-    try DllCall("uxtheme\SetWindowTheme", "Ptr", lv.Hwnd, "Str", "Explorer", "Ptr", 0)
-    catch
-    {
-    }
-}
 
 ProbeOCRLines()
 {
@@ -1017,10 +727,7 @@ ProbeOCRLines()
 ; SHOW GUI IMMEDIATELY
 ; ============================================================
 
-InjectGlobalBosses()
 BuildBiomeLookups()
-BuildOreLookups()
-LoadOreChoices()
 LoadSavedWebhookURL()
 LoadJoinSettings()
 LoadAlts()
@@ -1322,11 +1029,9 @@ CreateMainUI()
     global PauseButton
     global JoinSettingsText
     global PauseHotkey, StopHotkey, ExitHotkey, StartTrueHotkey, StartModifiedHotkey
-    global DiscordURLEdit, DiscordRoleIDEdit, DiscordTestResultEdit
-    global DiscordWebhookURL, DiscordDefaultRoleID
     global PanelRegistry
     global DesignWidth := 560
-    global DesignHeight := 492    ; update if you changed the Show height
+    global DesignHeight := 492
 
     PanelRegistry := Map()
 
@@ -1373,7 +1078,7 @@ CreateMainUI()
     OCRResultEdit := MainGui.AddEdit("x34 y381 w492 h76 ReadOnly -Wrap", "")
     RegisterPanel("ocr", ocrGroup, [OCRResultEdit])
 
-    ; Hidden utility controls (needed by other functions).
+    ; Hidden utility controls
     MainGui.SetFont("s9 c9AA4B2", "Segoe UI")
     RegionText := MainGui.AddText("x34 y0 w10 h10 Hidden", "")
     JoinSettingsText := MainGui.AddText("x34 y0 w10 h10 Hidden", "")
@@ -1383,42 +1088,6 @@ CreateMainUI()
     MainGui.Show("w" . DesignWidth . " h" . DesignHeight)
     MainGui.MinSize := "w" . DesignWidth . " h" . DesignHeight
     MainGui.Opt("+Resize")
-}
-
-
-ApplyPanelPositions()
-{
-    global PanelRegistry, MainGui, DesignWidth, DesignHeight
-
-    if !IsObject(MainGui)
-        return
-
-    MainGui.GetPos(, , &curW, &curH)
-    scaleX := curW / DesignWidth
-    scaleY := curH / DesignHeight
-
-    for name, panel in PanelRegistry
-    {
-        for entry in panel.entries
-        {
-            newX := Round(entry.x * scaleX)
-            newY := Round(entry.y * scaleY)
-            newW := Round(entry.w * scaleX)
-            newH := Round(entry.h * scaleY)
-
-            if panel.visible
-                entry.ctrl.Move(newX, newY, newW, newH)
-            else
-                entry.ctrl.Move(newX, -4000, newW, newH)
-        }
-    }
-}
-
-OnGuiResize(gui, minMax, width, height)
-{
-    if (minMax = -1)
-        return
-    ApplyPanelPositions()
 }
 
 RegisterPanel(name, groupBox, controls)
@@ -1442,8 +1111,15 @@ SetPanelVisible(name, visible)
     global PanelRegistry
     if !PanelRegistry.Has(name)
         return
-    PanelRegistry[name].visible := visible
-    ApplyPanelPositions()
+    p := PanelRegistry[name]
+    for e in p.entries
+    {
+        if visible
+            e.ctrl.Move(e.x, e.y, e.w, e.h)
+        else
+            e.ctrl.Move(e.x, -4000, e.w, e.h)
+    }
+    p.visible := visible
 }
 
 TogglePanelFromMenu(panelName, menuItemName, *)
@@ -1490,9 +1166,7 @@ BuildMenuBar(gui)
 
     toolsMenu := Menu()
     toolsMenu.Add("Select Biomes / Bosses...", (*) => ShowBiomeSelector())
-    toolsMenu.Add("Select Ores to Notify...",   (*) => ShowOreSelector())
     toolsMenu.Add("Discord Notifications...", (*) => ShowDiscordConfig())
-    toolsMenu.Add()
     toolsMenu.Add("Simulate Events...",        (*) => ShowSimulator())
     toolsMenu.Add("Alt Joiner...",             (*) => ShowAltJoiner())
     toolsMenu.Add("Biome Luck Calculator...",  (*) => ShowLuckCalculator())
@@ -1505,9 +1179,8 @@ BuildMenuBar(gui)
     toolsMenu.Add("Calibrate OCR Region",      (*) => CalibrateOCR())
     toolsMenu.Add("Reset OCR to Defaults",     (*) => ResetOCR())
     toolsMenu.Add("Test OCR Now",              (*) => TestOCR())
-    toolsMenu.Add("Capture Play Button",       (*) => CapturePlayButton())
-    toolsMenu.Add("")
     toolsMenu.Add("Capture Attack Hold Point", (*) => CaptureAttackHold())
+    toolsMenu.Add("Capture Play Button",       (*) => CapturePlayButton())
     toolsMenu.Add("Edit Attack Sequences...", (*) => ShowAttackEditor())
     mb.Add("Tools", toolsMenu)
 
@@ -1517,14 +1190,12 @@ BuildMenuBar(gui)
     viewMenu.Add("Status Card",           (*) => TogglePanelFromMenu("status",  "Status Card"))
     viewMenu.Add("Biome Hopping",         (*) => TogglePanelFromMenu("hop",     "Biome Hopping"))
     viewMenu.Add("Last OCR Result",       (*) => TogglePanelFromMenu("ocr",     "Last OCR Result"))
-    viewMenu.Add("Discord Notifications", (*) => TogglePanelFromMenu("discord", "Discord Notifications"))
     viewMenu.Add()
     viewMenu.Add("Expand All",  (*) => ToggleAllPanels(true))
     viewMenu.Add("Collapse All",(*) => ToggleAllPanels(false))
     viewMenu.Check("Status Card")
     viewMenu.Check("Biome Hopping")
     viewMenu.Check("Last OCR Result")
-    viewMenu.Check("Discord Notifications")
     mb.Add("View", viewMenu)
     ViewMenuObj := viewMenu    
     helpMenu := Menu()
@@ -1533,6 +1204,8 @@ BuildMenuBar(gui)
 
     gui.MenuBar := mb
 }
+
+global AttackEditorGui := 0
 
 ShowAttackEditor(*)
 {
@@ -1665,139 +1338,13 @@ AttackEditorClose()
     }
 }
 
-ShowDiscordConfig(*)
+; The embedded Discord GUI is gone. Route Discord errors/successes
+; to the main OCR result box so you still see them.
+UpdateDiscordStatus(text)
 {
-    global DiscordConfigGui
-    global DiscordWebhookURL, PrivateServerLink, ChatDisplayName
-    global SecondaryWebhookURL, SecondaryEnabled, DiscordDefaultRoleID
-
-    if IsObject(DiscordConfigGui)
-    {
-        try
-        {
-            DiscordConfigGui.Show()
-            WinActivate("ahk_id " . DiscordConfigGui.Hwnd)
-            return
-        }
-        catch
-            DiscordConfigGui := 0
-    }
-
-    g := Gui("+AlwaysOnTop -MaximizeBox", "Discord Notifications")
-    g.BackColor := "20242A"
-    g.SetFont("s10 cFFFFFF", "Segoe UI")
-    g.AddText("x16 y14 w500 h22", "Discord Notifications")
-    g.SetFont("s9 c9AA4B2", "Segoe UI")
-    g.AddText("x16 y34 w500 h18", "Everything here is saved to disk automatically.")
-
-    y := 62
-
-    ; Webhook URL
-    g.SetFont("s9 cFFFFFF", "Segoe UI")
-    g.AddText("x16 y" . y . " w130 h22", "Webhook URL")
-    urlEdit := g.AddEdit("x150 y" . (y - 2) . " w340 h25", Trim(DiscordWebhookURL))
-    urlEdit.SetFont("s9 c000000", "Segoe UI")
-    y += 36
-
-    ; Role ID (test only)
-    g.SetFont("s9 cFFFFFF", "Segoe UI")
-    g.AddText("x16 y" . y . " w130 h22", "Role ID (test ping)")
-    roleEdit := g.AddEdit("x150 y" . (y - 2) . " w340 h25", DiscordDefaultRoleID)
-    roleEdit.SetFont("s9 c000000", "Segoe UI")
-    y += 36
-
-    ; Chat display name
-    g.SetFont("s9 cFFFFFF", "Segoe UI")
-    g.AddText("x16 y" . y . " w130 h22", "Chat Display Name")
-    chatEdit := g.AddEdit("x150 y" . (y - 2) . " w340 h25", Trim(ChatDisplayName))
-    chatEdit.SetFont("s9 c000000", "Segoe UI")
-    y += 36
-
-    ; Private server link
-    g.SetFont("s9 cFFFFFF", "Segoe UI")
-    g.AddText("x16 y" . y . " w130 h22", "Private Server Link")
-    psEdit := g.AddEdit("x150 y" . (y - 2) . " w340 h25", Trim(PrivateServerLink))
-    psEdit.SetFont("s9 c000000", "Segoe UI")
-    y += 44
-
-    ; Secondary
-    g.SetFont("s9 cFFFFFF", "Segoe UI")
-    secCb := g.AddCheckbox("x16 y" . y . " w474 h22" . (SecondaryEnabled ? " Checked" : ""),
-        "Also send to a 2nd Discord server")
-    secCb.SetFont("s9 cFFFFFF", "Segoe UI")
-    y += 30
-
-    g.SetFont("s9 cFFFFFF", "Segoe UI")
-    g.AddText("x16 y" . y . " w130 h22", "2nd Webhook URL")
-    secEdit := g.AddEdit("x150 y" . (y - 2) . " w340 h25", Trim(SecondaryWebhookURL))
-    secEdit.SetFont("s9 c000000", "Segoe UI")
-    y += 40
-
-    ; Buttons
-    g.SetFont("s9 cFFFFFF", "Segoe UI")
-    g.AddButton("x16 y" . y . " w200 h32", "SEND TEST PING").OnEvent("Click",
-        (*) => DoDiscordTestFromConfig(g, urlEdit, roleEdit))
-    g.AddButton("x230 y" . y . " w260 h32", "SAVE & CLOSE").OnEvent("Click",
-        (*) => SaveDiscordConfig(g, urlEdit, roleEdit, chatEdit, psEdit, secCb, secEdit))
-
-    g.OnEvent("Close", (*) => SaveDiscordConfig(g, urlEdit, roleEdit, chatEdit, psEdit, secCb, secEdit))
-    g.OnEvent("Escape", (*) => CloseDiscordConfig())
-
-    DiscordConfigGui := g
-    g.Show("w520 h" . (y + 60))
+    UpdateOCRResult(text)
 }
 
-SaveDiscordConfig(g, urlEdit, roleEdit, chatEdit, psEdit, secCb, secEdit)
-{
-    global DiscordWebhookURL, PrivateServerLink, ChatDisplayName
-    global SecondaryWebhookURL, SecondaryEnabled, DiscordDefaultRoleID
-
-    DiscordWebhookURL    := Trim(urlEdit.Text)
-    DiscordDefaultRoleID := Trim(roleEdit.Text)
-    ChatDisplayName      := Trim(chatEdit.Text)
-    PrivateServerLink    := Trim(psEdit.Text)
-    SecondaryWebhookURL  := Trim(secEdit.Text)
-    SecondaryEnabled     := secCb.Value
-
-    SaveConfigValue("WebhookURL",        DiscordWebhookURL)
-    SaveConfigValue("PrivateServerLink", PrivateServerLink)
-    SaveConfigValue("ChatDisplayName",   ChatDisplayName)
-    SaveConfigValue("SecondaryWebhookURL", SecondaryWebhookURL)
-    SaveConfigValue("SecondaryEnabled",  SecondaryEnabled ? "1" : "0")
-    SaveConfigValue("DiscordDefaultRoleID", DiscordDefaultRoleID)
-
-    CloseDiscordConfig()
-}
-
-CloseDiscordConfig()
-{
-    global DiscordConfigGui
-    if IsObject(DiscordConfigGui)
-    {
-        try DiscordConfigGui.Destroy()
-        catch
-        {
-        }
-        DiscordConfigGui := 0
-    }
-}
-
-DoDiscordTestFromConfig(g, urlEdit, roleEdit)
-{
-    global DiscordWebhookURL
-    DiscordWebhookURL := Trim(urlEdit.Text)
-    SaveConfigValue("WebhookURL", DiscordWebhookURL)
-
-    roleID := Trim(roleEdit.Text)
-    testMessage := "🔔 Test ping from 2026 Biome Hopper."
-
-    sent := SendDiscordBossNotification("TEST", "TEST", testMessage, roleID)
-
-    if sent
-        MsgBox("Sent successfully. Check the Discord channel.", "Test Ping", "Iconi")
-    else
-        MsgBox("Failed. Check the webhook URL is a valid Discord webhook link.", "Test Ping", "Icon!")
-}
 
 ; ============================================================
 ; MODE BUTTONS
@@ -1833,7 +1380,6 @@ StartBiomeHop(mode)
 {
     global AutoAttackActive, AutoAttackStartedTick, AutoAttackMaxMs
     global MacroRunning, MacroPaused, MacroMode
-    global OrengaAlertActive
     global OCR_X, OCR_Y, OCR_WIDTH, OCR_HEIGHT
     global TargetBiomeActive, TargetBiomeKeyword, TargetBiomeName
     global TargetBiomeDef, TargetPingedBosses
@@ -1851,7 +1397,6 @@ StartBiomeHop(mode)
     MacroRunning := true
     MacroPaused := false
     MacroMode := mode
-    OrengaAlertActive := false
     TargetBiomeActive := false
     TargetBiomeKeyword := ""
     TargetBiomeName := ""
@@ -1876,18 +1421,15 @@ StartBiomeHop(mode)
     if ActivateRoblox()
     {
         global PlayButtonConfigured
-        if PlayButtonConfigured && IsPlayButtonVisible()
+        if PlayButtonConfigured
         {
-            ; Same nudge-click the rejoin path uses. Pixel-detect the
-            ; green Play button, nudge 1px (forces a fresh mouse-move
-            ; event so Roblox registers the click), then click.
-            Sleep(300)
-            MouseMove(PlayButtonX, PlayButtonY, 0)
-            Sleep(120)
-            MouseMove(PlayButtonX + 1, PlayButtonY + 1, 0)
-            Sleep(60)
-            Click("Left")
-            Sleep(2000)
+            Sleep(600)
+            SendEvent("{Backslash}")
+            Sleep(600)
+            SendEvent("w")
+            Sleep(600)
+            SendEvent("{Enter}")
+            Sleep(3000)
         }
     }
     else
@@ -1912,23 +1454,6 @@ StartBiomeHop(mode)
 
         if !WaitWhilePaused()
             break
-
-        ; ---- PRIORITY CHECK: Orenga ----
-        ; Runs before any biome/boss logic. If it's visible, we pause
-        ; immediately so nothing else (especially a rejoin) can fire.
-        if CheckForOrenga()
-        {
-            HandleOrengaFound()
-            if !WaitWhilePaused()
-                break
-            continue
-        }
-        else if OrengaAlertActive
-        {
-            ; Orenga no longer visible - clear alert so a new spawn can
-            ; re-fire later.
-            OrengaAlertActive := false
-        }        
 
         if TargetBiomeActive
         {
@@ -1978,19 +1503,9 @@ StartBiomeHop(mode)
         ; The slash is intentional: it keeps Roblox chat focused/visible.
         ; Do it periodically rather than every OCR pass so it does not spam the chat box.
         KeepRobloxChatFocused()
-
-        ; ------------------------------------------------------------------
-        ; Roblox error-screen check.
-        ;
-        ; DISABLED in v1.0.0: the OCR regions used here false-positive on
-        ; freshly-joined servers (something in the loading screen / chat
-        ; scroll matches one of the error phrases), which caused an instant
-        ; rejoin loop before the chat scanner ever ran.
-        ;
-        ; To try it, change `false` to `A_TickCount - LastErrorCheckTick > 2000`
-        ; and re-test. Expect to tune the phrase list or the OCR regions.
-        ; ------------------------------------------------------------------
-        if (false)
+        
+        ; Throttled error-screen check (every 3 seconds)
+        if (A_TickCount - LastErrorCheckTick > 3000)
         {
             LastErrorCheckTick := A_TickCount
             if CheckRobloxErrorScreen()
@@ -2012,19 +1527,19 @@ StartBiomeHop(mode)
                 {
                     try Run("taskkill /F /IM RobloxPlayerBeta.exe", , "Hide")
                     Sleep(1500)
-            }
-        }
+                }
 
-            ; Rejoin.
-            if !RejoinRoblox()
-            {
-                if !MacroRunning
-                    break
+                ; Rejoin.
+                if !RejoinRoblox()
+                {
+                    if !MacroRunning
+                        break
+                }
+                FocusRobloxChat()
+                continue
             }
-            FocusRobloxChat()
-            continue
         }
-        Sleep(20)
+        Sleep(60)
 
         if !MacroRunning
             break
@@ -2045,7 +1560,6 @@ StartBiomeHop(mode)
             break
 
         evt := FindChatEvent(lines)
-        DetectOreSpawns(lines)
 
                 ; -------- Fallback: boss spawned but no biome message --------
         ; Sometimes Roblox drops the biome announcement but still shows
@@ -2173,10 +1687,27 @@ StartBiomeHop(mode)
 
         if (evt.type = "BAD")
         {
-            ; Rejoin immediately - no second confirmation pass.
-            ; This shaves ~150ms per bad biome, which is noticeable
-            ; when you're hopping fast. The keyword matching is specific
-            ; enough that a single hit is reliable.
+            ; Require 2 consecutive detections of the same biome before rejoining.
+            ; The newest chat line can be partially clipped and OCR'd wrong on
+            ; the first pass; a second pass confirms.
+            if (BadBiomeSeenId = evt.def.id)
+            {
+                BadBiomeSeenCount += 1
+            }
+            else
+            {
+                BadBiomeSeenId := evt.def.id
+                BadBiomeSeenCount := 1
+            }
+
+            if (BadBiomeSeenCount < 2)
+            {
+                UpdateStatus("BAD BIOME?", evt.def.biomeName)
+                UpdateOCRResult("Possible bad biome: " . evt.def.biomeName . " (confirming...)")
+                Sleep(150)
+                continue
+            }
+
             BadBiomeSeenCount := 0
             BadBiomeSeenId := ""
 
@@ -2234,9 +1765,9 @@ KeepRobloxChatFocused()
     ; no click, no focus theft.
     MouseGetPos(&origX, &origY)
     MouseMove(OCR_X + 100, OCR_Y + 100, 3)
-    Sleep(40)
+    Sleep(80)
     MouseMove(origX, origY, 3)
-    Sleep(20)
+    Sleep(40)
 
     LastChatFocusTick := A_TickCount
 }
@@ -2291,16 +1822,6 @@ MonitorTargetBiome()
     {
         UpdateOCRResult("TARGET CHAT OCR FAILED: " . err.Message)
     }
-    ; Priority boss check overrides camp behaviour too.
-    priorityBoss := CheckPriorityBoss()
-    if (priorityBoss != "")
-    {
-        HandlePriorityBoss(priorityBoss)
-        return "STOPPED"
-    }
-
-    ; Ore spawns can happen while camping too — check every pass.
-    DetectOreSpawns(chatLines)
 
     ; ---- 2) Count occurrences of each normalized line ----
     currentCounts := Map()
@@ -2344,6 +1865,14 @@ MonitorTargetBiome()
         origText := origByNorm[n]
         low := StrLower(origText)
 
+        ; World reset?
+        if InStr(low, "world has returned to normal")
+        {
+            if (TargetBiomeDef.id != "normal")
+                return "WORLD_RESET"
+            continue
+        }
+
         ; Any other biome? -> world cycled.
         otherBiome := false
         for kw, def in BiomeByKeyword
@@ -2373,6 +1902,12 @@ MonitorTargetBiome()
         {
             UpdateOCRResult("Boss '" . bossObj.name . "' spawned - leaving biome.")
             return "LEAVE_BIOME"
+        }
+        
+        if (TargetBiomeDef.HasProp("autoAttack") && TargetBiomeDef.autoAttack)
+        {
+            seqName := TargetBiomeDef.HasProp("attackSequence") ? TargetBiomeDef.attackSequence : "default"
+            StartAutoAttack(seqName)
         }
         
         ; Start auto-attack if this biome is flagged for it and we aren't
@@ -2646,169 +2181,6 @@ GetBossBarRect()
         w: Round(A_ScreenWidth * 0.50),
         h: Round(A_ScreenHeight * 0.24)
     }
-}
-
-; ============================================================
-; ORENGA PRIORITY DETECTION
-;
-; Orenga is a roaming boss that is NOT announced in chat - the only
-; way to detect it is via the boss health bar at the bottom of the
-; screen. Because it's extremely rare and highly desirable, we check
-; for it on every loop iteration BEFORE any biome or boss decision.
-;
-; On detection: ping Discord and pause the macro so a bad-biome rejoin
-; can't yank us out of the server before the player responds.
-; ============================================================
-; ============================================================
-; ORENGA PIXEL COLOR CHECK
-;
-; Orenga's HP bar is a distinctive orange (#E17814, RGB 225 120 20).
-; No other boss in the game uses that exact color, so we can scan a
-; few horizontal lines inside the boss-bar region and look for it.
-;
-; This runs as a second signal on top of the OCR name check, in case
-; the stylized font confuses OCR on a specific render.
-; ============================================================
-
-IsOrengaBarVisible()
-{
-    targetR := 225
-    targetG := 120
-    targetB := 20
-    tol := 35       ; per-channel tolerance, covers antialiasing + D3D variance
-
-    bossRect := GetBossBarRect()
-
-    ; The bar sits a little below the boss name text. From the region
-    ; returned by GetBossBarRect, the bar is roughly 45-65% down.
-    ; We scan 5 horizontal lines in that range and take any hit.
-    xStart := bossRect.x + Round(bossRect.w * 0.30)
-    xEnd   := bossRect.x + Round(bossRect.w * 0.70)
-
-    Loop 5
-    {
-        yFrac := 0.45 + (A_Index - 1) * (0.20 / 4)
-        y := bossRect.y + Round(bossRect.h * yFrac)
-
-        matches := 0
-        samples := 0
-        x := xStart
-        while (x <= xEnd)
-        {
-            c := PixelGetColor(x, y, "RGB")
-            r := (c >> 16) & 0xFF
-            g := (c >> 8)  & 0xFF
-            b :=  c        & 0xFF
-
-            ; Skip near-black so chat shadow / letterboxing doesn't count.
-            if !(r < 30 && g < 30 && b < 30)
-            {
-                samples += 1
-                if (Abs(r - targetR) <= tol
-                &&  Abs(g - targetG) <= tol
-                &&  Abs(b - targetB) <= tol)
-                    matches += 1
-            }
-            x += 6
-        }
-
-        ; Bar fills left to right. 30% orange on a line is a clear hit
-        ; even if the boss is heavily damaged.
-        if (samples >= 8 && matches / samples > 0.30)
-            return true
-    }
-
-    return false
-}
-
-CheckForOrenga(force := false)
-{
-    global OrengaLastDetectTick, OrengaDetectCooldownMs, OrengaKeywords
-
-    ; Rate limit: OCR is fast but not free. 5x/second is plenty.
-    if !force && (A_TickCount - OrengaLastDetectTick < OrengaDetectCooldownMs)
-        return false
-    OrengaLastDetectTick := A_TickCount
-
-    ; --- 1) OCR the boss-name text ---
-    try
-    {
-        bossRect := GetBossBarRect()
-        result := OCR.FromRect(bossRect.x, bossRect.y, bossRect.w, bossRect.h, {lang: "en-US"})
-        if (result.Text != "")
-        {
-            low := StrLower(result.Text)
-            for kw in OrengaKeywords
-                if InStr(low, kw)
-                    return true
-        }
-    }
-    catch
-    {
-    }
-
-    ; --- 2) Fall back to the orange bar color ---
-    ; Catches cases where OCR mangled the name beyond recognition.
-    if IsOrengaBarVisible()
-        return true
-
-    return false
-}
-
-HandleOrengaFound()
-{
-    global MacroPaused, OrengaAlertActive, PauseButton, MacroMode
-
-    ; Always ensure paused, even on repeat calls.
-    MacroPaused := true
-    try PauseButton.Text := "RESUME"
-
-    ; Only fire the Discord ping + status change once per spawn.
-    if OrengaAlertActive
-        return
-
-    OrengaAlertActive := true
-
-    NotifyOrenga()
-
-    UpdateStatus("ORENGA FOUND!", "Paused - check Discord")
-    UpdateOCRResult(
-        "🚨 ORENGA DETECTED 🚨`n"
-        . "The script has paused so a rejoin cannot lose it.`n"
-        . "Discord ping sent - get to this server.`n"
-        . "Press F6 (or RESUME) when ready to continue."
-    )
-}
-
-NotifyOrenga()
-{
-    global DiscordWebhookURL, PrivateServerLink
-    global SecondaryWebhookURL, SecondaryEnabled
-    global OrengaRoleID, LastBossNotifyTick
-
-    msg :=
-        "🚨🚨 **ORENGA HAS SPAWNED!** 🚨🚨`n"
-        . "Priority alert - script paused, get in now.`n"
-
-    link := Trim(PrivateServerLink)
-    if (link != "" && link != "PASTE_YOUR_PRIVATE_SERVER_LINK_HERE")
-        msg .= "`n" . link
-
-    ; Primary server
-    if (Trim(DiscordWebhookURL) != "" && DiscordWebhookURL != "PASTE_NEW_DISCORD_WEBHOOK_HERE")
-        try SendDiscordWebhook(DiscordWebhookURL, msg, OrengaRoleID)
-
-    ; Secondary server (if enabled)
-    if SecondaryEnabled
-    {
-        secURL := Trim(SecondaryWebhookURL)
-        if (secURL != "" && secURL != "PASTE_SECONDARY_WEBHOOK_HERE")
-            try SendDiscordWebhook(secURL, msg, "")
-    }
-
-    ; Stamp the standard boss cooldown so the normal boss-bar path
-    ; doesn't fire a second ping for the same spawn.
-    LastBossNotifyTick["Orenga"] := A_TickCount
 }
 
 ; ============================================================
@@ -3150,106 +2522,28 @@ RejoinRoblox()
     global SafeClickX, SafeClickY, SafeClickRelX, SafeClickRelY, SafeClickConfigured
     global RobloxLaunchTimeout
 
-    ; Priority safety: refuse to rejoin while Orenga is on the boss bar.
-    ; Use force := true to bypass the OCR rate limit - we want a real
-    ; check right here, right now.
-    if CheckForOrenga(true)
-    {
-        HandleOrengaFound()
-        return false
-    }
-
     if !MacroRunning
         return false
 
     UpdateStatus("REJOINING", "Server hop")
 
-    ; ---- Fast path: Ctrl+R the browser tab that has the join page. ----
-    ; This is much quicker than closing Roblox, re-activating the browser,
-    ; clicking Join, and waiting for launch. If the browser tab can't be
-    ; found or the refresh doesn't produce a Roblox launch, we fall
-    ; through to the click-Join path below (Roblox is already closed by
-    ; the time TryCtrlRRejoin returns false).
-    if TryNavigateAndJoin()
+    ; 1) Close Roblox.
+    hwnd := WinExist("ahk_exe RobloxPlayerBeta.exe")
+    if hwnd
     {
-        try WinActivate("ahk_exe RobloxPlayerBeta.exe")
+        try WinClose("ahk_id " . hwnd)
         catch
         {
         }
-        WinWaitActive("ahk_exe RobloxPlayerBeta.exe", , 1.0)
-        Sleep(2000)
 
-        ; Force fullscreen on whichever monitor was selected.
-        robloxHwnd := WinExist("ahk_exe RobloxPlayerBeta.exe")
-        if robloxHwnd
-        {
-            mon := GetMonitorBounds()
-            Loop 2
-            {
-                WinGetPos(&rx, &ry, &rw, &rh, "ahk_id " . robloxHwnd)
-                if (rw >= mon.w - 5 && rh >= mon.h - 5)
-                    break
-                try WinActivate("ahk_id " . robloxHwnd)
-                Send("{F11}")
-                Sleep(600)
-            }
-        }
-
-        ; Same Play-button logic as the click path.
-        SetTimer(AntiAfkTick, 5000)
-        playFound := false
-        phase1Deadline := A_TickCount + RobloxLaunchTimeout
-        while (A_TickCount < phase1Deadline)
-        {
-            if !MacroRunning
-                return false
-            if MacroPaused
-            {
-                Sleep(200)
-                continue
-            }
-            if IsPlayButtonVisible()
-            {
-                playFound := true
-                break
-            }
-            UpdateOCRResult("URL rejoin - waiting for Play button... ("
-                          . Round((phase1Deadline - A_TickCount) / 1000) . "s left)")
-            Sleep(150)
-        }
-
-        if playFound
-        {
-            UpdateOCRResult("Play button visible - clicking...")
-            ActivateRoblox()
-            Sleep(120)
-            MouseMove(PlayButtonX, PlayButtonY, 0)
-            Sleep(120)
-            MouseMove(PlayButtonX + 1, PlayButtonY + 1, 0)
-            Sleep(60)
-            Click("Left")
-
-            disappearDeadline := A_TickCount + 6000
-            while (A_TickCount < disappearDeadline)
-            {
-                if !MacroRunning
-                    return false
-                if !IsPlayButtonVisible()
-                    break
-                Sleep(100)
-            }
-
-            Sleep(2500)
-            FocusRobloxChat()
-            UpdateStatus("RUNNING", MacroMode)
-            UpdateOCRResult("Rejoined via URL - in world.")
-            return true
-        }
-
-        ; Refresh happened but Play never showed. Fall through to the
-        ; click-Join path. Roblox is already closed at this point.
-        UpdateOCRResult("URL rejoin didn't reach Play screen - trying click-Join...")
+        ; Wait only until the old Roblox window disappears.
+        closeDeadline := A_TickCount + 2500
+        while MacroRunning && WinExist("ahk_exe RobloxPlayerBeta.exe") && A_TickCount < closeDeadline
+            Sleep(20)
     }
+
+    if !MacroRunning
+        return false
 
     ; 2) Activate the captured browser window.
     browserHwnd := FindJoinWindow()
@@ -3338,7 +2632,7 @@ RejoinRoblox()
 
     ; Give Roblox a moment to finish opening before checking its window
     ; size.
-    Sleep(1200)
+    Sleep(2000)
 
     ; Force fullscreen every time. Roblox sometimes opens as a small,
     ; windowed square instead of covering the screen, which throws off
@@ -3348,13 +2642,15 @@ RejoinRoblox()
     robloxHwnd := WinExist("ahk_exe RobloxPlayerBeta.exe")
     if robloxHwnd
     {
-        mon := GetMonitorBounds()
+        MonitorGet(MonitorGetPrimary(), &monLeft, &monTop, &monRight, &monBottom)
+        screenW := monRight - monLeft
+        screenH := monBottom - monTop
 
         Loop 2
         {
             WinGetPos(&rx, &ry, &rw, &rh, "ahk_id " . robloxHwnd)
-            if (rw >= mon.w - 5 && rh >= mon.h - 5)
-                break
+            if (rw >= screenW - 5 && rh >= screenH - 5)
+                break  ; already covers the full screen
 
             try WinActivate("ahk_id " . robloxHwnd)
             Send("{F11}")
@@ -3447,8 +2743,8 @@ RejoinRoblox()
             break
         }
 
-        UpdateOCRResult("URL rejoin - waiting for Play button... ("
-                        . Round((phase1Deadline - A_TickCount) / 1000) . "s left)")
+        UpdateOCRResult("Waiting for Play button... ("
+                      . Round((phase1Deadline - A_TickCount) / 1000) . "s left)")
         Sleep(150)
     }
 
@@ -3487,154 +2783,14 @@ RejoinRoblox()
         Sleep(100)
     }
 
-    ; ---- Phase 4: grace period. ----
-    Sleep(1500)
+    ; ---- Phase 4: short grace period. The world needs a moment to
+    ; finish rendering before chat scanning is meaningful. ----
+    Sleep(2500)
 
     FocusRobloxChat()
     UpdateStatus("RUNNING", MacroMode)
     UpdateOCRResult("Rejoined successfully - in world.")
     return true
-}
-
-; ============================================================
-; CTRL+R REJOIN
-;
-; Instead of closing Roblox and re-clicking Join, we refresh the
-; browser tab that has the private server link. Roblox's join page
-; reloads and re-triggers the launch automatically.
-;
-; Falls back to the close-and-click flow if:
-;   - Roblox is still running after the refresh (launch failed)
-;   - The browser window can't be found
-; ============================================================
-
-; ============================================================
-; FAST REJOIN VIA URL NAVIGATION
-;
-; Instead of relying on a browser tab that's already on the private
-; server page, we focus the browser, jump the URL bar, type the
-; private server link, and press Enter. This works no matter what the
-; browser was showing before, as long as the browser is running.
-;
-; Then we wait for Roblox to launch, same as the click-Join path.
-; Falls back to click-Join if anything goes wrong.
-; ============================================================
-
-; ============================================================
-; FAST REJOIN VIA URL LAUNCH
-;
-; Approach borrowed from MrToaster's script:
-;   1) Close Roblox.
-;   2) If a browser window with "Roblox" in its title exists,
-;      activate it and Ctrl+R it.
-;   3) Otherwise, Run the URL - Windows routes it to the default
-;      browser and the private server page loads.
-;   4) Wait for Roblox to appear.
-;
-; Then the caller clicks Play, same as the click-Join path.
-; ============================================================
-
-TryNavigateAndJoin()
-{
-    global MacroRunning, RobloxLaunchTimeout, PrivateServerLink
-    global JoinWindowExe
-
-    link := Trim(PrivateServerLink)
-    if (link = "" || link = "PASTE_YOUR_PRIVATE_SERVER_LINK_HERE")
-        return false
-
-    ; ---- 1) Close Roblox ----
-    hwnd := WinExist("ahk_exe RobloxPlayerBeta.exe")
-    if hwnd
-    {
-        try WinClose("ahk_id " . hwnd)
-        catch
-        {
-        }
-        closeDeadline := A_TickCount + 2500
-        while MacroRunning && WinExist("ahk_exe RobloxPlayerBeta.exe") && A_TickCount < closeDeadline
-            Sleep(20)
-    }
-
-    if !MacroRunning
-        return false
-
-    ; ---- 2) Look for an existing Roblox browser tab and Ctrl+R it ----
-    refreshed := false
-    try
-    {
-        hwnds := WinGetList("ahk_exe " . JoinWindowExe)
-        for hwnd in hwnds
-        {
-            title := ""
-            try title := WinGetTitle("ahk_id " . hwnd)
-            if (title != "" && InStr(StrLower(title), "roblox"))
-            {
-                WinActivate("ahk_id " . hwnd)
-                Sleep(300)
-                Send("^r")
-                refreshed := true
-                break
-            }
-        }
-    }
-    catch
-    {
-    }
-
-    ; ---- 3) If no Roblox tab found, Run the URL fresh ----
-    ; The URL may or may not launch Roblox directly depending on its
-    ; format. Share links usually land on a page with a Play button;
-    ; game-instances links may auto-launch. Either way, we wait below.
-    if !refreshed
-    {
-        try Run(link)
-        catch
-            return false
-    }
-
-    ; ---- 4) Wait for Roblox to launch ----
-    launchDeadline := A_TickCount + RobloxLaunchTimeout
-    while MacroRunning && A_TickCount < launchDeadline
-    {
-        if WinExist("ahk_exe RobloxPlayerBeta.exe")
-            break
-        Sleep(40)
-    }
-
-    if !MacroRunning
-        return false
-
-    return WinExist("ahk_exe RobloxPlayerBeta.exe")
-}
-
-GetMonitorBounds(idx := 0)
-{
-    if (idx = 0)
-    {
-        global SelectedMonitor
-        idx := SelectedMonitor
-    }
-    MonitorGet(idx, &left, &top, &right, &bottom)
-    return { x: left, y: top, w: right - left, h: bottom - top }
-}
-
-LoadMonitorSelection()
-{
-    global SelectedMonitor, ConfigFile
-
-    if FileExist(ConfigFile)
-    {
-        try
-        {
-            v := IniRead(ConfigFile, "Display", "Monitor", "1")
-            SelectedMonitor := Integer(v)
-        }
-    }
-
-    maxMon := MonitorGetCount()
-    if (SelectedMonitor < 1 || SelectedMonitor > maxMon)
-        SelectedMonitor := 1
 }
 
 StartAutoAttack(sequenceName := "default")
@@ -4340,20 +3496,6 @@ GetListViewSelectedRow(lv)
     return idx + 1
 }
 
-ClearListViewSelection(lv)
-{
-    static LVM_SETITEMSTATE := 0x102B
-    static LVIS_SELECTED    := 0x0002
-    static LVIS_FOCUSED     := 0x0001
-
-    ; LVITEM struct: state at offset 12, stateMask at offset 16
-    buf := Buffer(64, 0)
-    NumPut("Int",  -1, buf, 4)                       ; iItem = -1 (all items)
-    NumPut("UInt",  0, buf, 12)                      ; state = 0 (clear)
-    NumPut("UInt", LVIS_SELECTED | LVIS_FOCUSED, buf, 16)
-    SendMessage(LVM_SETITEMSTATE, 0, buf.Ptr, lv.Hwnd)
-}
-
 AddAltFromEdit(newEdit, lv, *)
 {
     global AltNames
@@ -4618,30 +3760,22 @@ TogglePause(*)
     global MacroPaused
     global MacroMode
     global PauseButton
-    global OrengaAlertActive
 
-    ; Always allow toggling, even if the macro isn't running.
-    ; This lets you clear an Orenga alert that was triggered while
-    ; sitting idle, without having to restart the whole script.
+    if !MacroRunning
+        return
+
     MacroPaused := !MacroPaused
 
     if MacroPaused
     {
         StopAutoAttack()
-        try PauseButton.Text := "RESUME"
-        UpdateStatus("PAUSED", MacroRunning ? MacroMode : "None")
+        PauseButton.Text := "RESUME"
+        UpdateStatus("PAUSED", MacroMode)
     }
     else
     {
-        ; Clearing the pause also clears the Orenga alert flag so a fresh
-        ; spawn can fire a fresh ping later.
-        OrengaAlertActive := false
-
-        try PauseButton.Text := "PAUSE"
-        if MacroRunning
-            UpdateStatus("RUNNING", MacroMode)
-        else
-            UpdateStatus("IDLE", "None")
+        PauseButton.Text := "PAUSE"
+        UpdateStatus("RUNNING", MacroMode)
     }
 }
 
@@ -4658,7 +3792,6 @@ StopMacro(*)
     global TargetBiomeActive, TargetBiomeKeyword, TargetBiomeName
     global TargetBiomeStartedTick, TargetChatBaseline
     global BadBiomeSeenCount, BadBiomeSeenId
-    global OrengaAlertActive
     global PauseButton
 
     MacroRunning := false
@@ -5348,7 +4481,7 @@ SendBiomeArrivalNotification(biomeKeyword, def)
         StageCommunityBiomePing(def)
 
     if sent
-        UpdateOCRResult("✅ " . biomeName . " - biome-arrival ping sent.")
+        UpdateDiscordStatus("✅ " . biomeName . " - biome-arrival ping sent.")
 }
 
 ; Sends a boss-spawn notification. `def` is the biome, `bossObj` is the
@@ -5403,7 +4536,7 @@ HandleDetectedBoss(biomeDef, bossObj, detectionMethod)
     if sent
     {
         UpdateOCRResult(notification . "`n`n✅ Discord notification sent. Staying in biome.")
-        UpdateOCRResult("✅ " . bossName . " / " . biomeDef.biomeName . " - notification sent.")
+        UpdateDiscordStatus("✅ " . bossName . " / " . biomeDef.biomeName . " - notification sent.")
     }
     else
     {
@@ -5411,173 +4544,6 @@ HandleDetectedBoss(biomeDef, bossObj, detectionMethod)
     }
 
     return sent
-}
-
-DetectOreSpawns(lines)
-{
-    global OreByKeyword, OreNotifyEnabled, LastOreNotifyTick, BiomeNotifyCooldownMs
-
-    for line in lines
-    {
-        if !line.isGame
-            continue
-
-        low := StrLower(line.text)
-        if !InStr(low, "has spawned")
-            continue
-        if !InStr(low, "in the mines")
-            continue
-
-        for kw, oreDef in OreByKeyword
-        {
-            if !InStr(low, kw)
-                continue
-
-            if !OreNotifyEnabled.Has(oreDef.id) || !OreNotifyEnabled[oreDef.id]
-                continue
-
-            nowTick := A_TickCount
-            if LastOreNotifyTick.Has(oreDef.id)
-            {
-                if (nowTick - LastOreNotifyTick[oreDef.id] < BiomeNotifyCooldownMs)
-                    continue
-            }
-            LastOreNotifyTick[oreDef.id] := nowTick
-
-            HandleOreDetected(oreDef)
-            return   ; one ore per pass
-        }
-    }
-}
-
-HandleOreDetected(oreDef)
-{
-    global PrivateServerLink, DiscordWebhookURL
-
-    UpdateOCRResult("⛏️ Ore detected: " . oreDef.name)
-
-    if (Trim(DiscordWebhookURL) = ""
-    ||  DiscordWebhookURL = "PASTE_NEW_DISCORD_WEBHOOK_HERE")
-        return
-
-    msg := "⛏️ **" . oreDef.name . "** has spawned in the mines!"
-
-    link := Trim(PrivateServerLink)
-    if (link != "" && link != "PASTE_YOUR_PRIVATE_SERVER_LINK_HERE")
-        msg .= "`n" . link
-
-    try SendDiscordWebhook(DiscordWebhookURL, msg, oreDef.roleID)
-}
-
-ShowOreSelector(*)
-{
-    global OreDefs, OreNotifyEnabled, OreSelectorGui
-
-    if IsObject(OreSelectorGui)
-    {
-        try
-        {
-            OreSelectorGui.Show()
-            WinActivate("ahk_id " . OreSelectorGui.Hwnd)
-            return
-        }
-        catch
-            OreSelectorGui := 0
-    }
-
-    g := Gui("+AlwaysOnTop -MaximizeBox +Resize", "Select Ores to Notify")
-    g.BackColor := "FFFFFF"
-
-    g.SetFont("s10 c000000", "Segoe UI")
-    g.AddText("x14 y12 w400 h22", "Tick the ores you want Discord pings for:")
-
-    g.SetFont("s9 c000000", "Segoe UI")
-    lv := g.AddListView(
-        "x14 y42 w400 h420 Grid -Multi Checked",
-        ["Ore"])
-    lv.SetFont("s9 c000000", "Segoe UI")
-    lv.ModifyCol(1, 380)
-
-   ForceClassicListViewTheme(lv)    
-
-    for def in OreDefs
-    {
-        checked := OreNotifyEnabled.Has(def.id) && OreNotifyEnabled[def.id]
-        lv.Add(checked ? "Check" : "", def.name)
-    }
-
-    lv.OnEvent("ItemCheck", (ctrl, rowNum, checked) => SetTimer(ApplyOreCheck.Bind(lv, rowNum, checked), -1))
-
-    ApplyOreCheck(lv, rowNum, checked)
-    {
-        global OreDefs, OreNotifyEnabled
-
-        if (rowNum < 1 || rowNum > OreDefs.Length)
-            return
-
-        def := OreDefs[rowNum]
-        OreNotifyEnabled[def.id] := checked
-        SaveOreChoice(def.id, checked ? "notify" : "ignore")
-    }
-
-    g.SetFont("s9 c000000", "Segoe UI")
-    g.AddButton("x14 y476 w180 h32", "Mark Selected NOTIFY").OnEvent("Click",
-        (*) => SetSelectedOreStatus(lv, true))
-    g.AddButton("x204 y476 w100 h32", "IGNORE").OnEvent("Click",
-        (*) => SetSelectedOreStatus(lv, false))
-    g.AddButton("x314 y476 w100 h32", "Close").OnEvent("Click",
-        (*) => CloseOreSelector())
-
-    g.OnEvent("Close", (*) => CloseOreSelector())
-    g.OnEvent("Escape", (*) => CloseOreSelector())
-
-    OreSelectorGui := g
-    g.Show("w430 h530")
-}
-
-OnOreCheck(lv, rowNum, checked)
-{
-    global OreDefs, OreNotifyEnabled
-
-    if (rowNum < 1 || rowNum > OreDefs.Length)
-        return
-
-    def := OreDefs[rowNum]
-    OreNotifyEnabled[def.id] := checked
-    SaveOreChoice(def.id, checked ? "notify" : "ignore")
-}
-
-SetSelectedOreStatus(lv, notify)
-{
-    global OreDefs, OreNotifyEnabled
-
-    row := 0
-    Loop
-    {
-        row := SendMessage(0x100C, row, 0x0002, lv.Hwnd)
-        if (row = -1 || row = "")
-            break
-        realRow := row + 1
-        if (realRow < 1 || realRow > OreDefs.Length)
-            continue
-        def := OreDefs[realRow]
-        OreNotifyEnabled[def.id] := notify
-        SaveOreChoice(def.id, notify ? "notify" : "ignore")
-        lv.Modify(realRow, (notify ? "Check" : "-Check") . " -Select -Focus")
-    }
-}
-
-CloseOreSelector()
-{
-    global OreSelectorGui
-    if IsObject(OreSelectorGui)
-    {
-        try OreSelectorGui.Destroy()
-        catch
-        {
-        }
-        OreSelectorGui := 0
-    }
 }
 
 ; ============================================================
@@ -5655,7 +4621,7 @@ SendDiscordBossNotificationTo(url, messageText, roleID, label)
 
     if (url = "" || url = "PASTE_NEW_DISCORD_WEBHOOK_HERE" || url = "PASTE_SECONDARY_WEBHOOK_HERE")
     {
-        UpdateOCRResult("❌ " . label . " NOT SENT: webhook URL is not configured.")
+        UpdateDiscordStatus("❌ " . label . " NOT SENT: webhook URL is not configured.")
         return false
     }
 
@@ -5664,7 +4630,7 @@ SendDiscordBossNotificationTo(url, messageText, roleID, label)
     ; with a clear message instead of a confusing HTTP error later.
     if !(InStr(url, "discord.com/api/webhooks/") || InStr(url, "discordapp.com/api/webhooks/"))
     {
-        UpdateOCRResult("❌ " . label . " NOT SENT: that URL doesn't look like a Discord webhook link (should contain /api/webhooks/).")
+        UpdateDiscordStatus("❌ " . label . " NOT SENT: that URL doesn't look like a Discord webhook link (should contain /api/webhooks/).")
         return false
     }
 
@@ -5735,7 +4701,7 @@ SendDiscordWebhook(url, text, roleID := "")
 
         if (whr.Status < 200 || whr.Status >= 300)
         {
-            UpdateOCRResult(
+            UpdateDiscordStatus(
                 "❌ HTTP " . whr.Status . " from Discord.`n"
                 . whr.ResponseText
             )
@@ -5746,7 +4712,7 @@ SendDiscordWebhook(url, text, roleID := "")
     }
     catch Error as err
     {
-        UpdateOCRResult("❌ ERROR: " . err.Message)
+        UpdateDiscordStatus("❌ ERROR: " . err.Message)
         return false
     }
 }
@@ -5870,6 +4836,8 @@ ForceResume()
 ; Each row has its own base 1/N and its own multiplier.
 ; Multipliers persist to INI.
 ; ============================================================
+
+global LuckCalcGui := 0
 
 ShowLuckCalculator(*)
 {
@@ -6208,6 +5176,16 @@ SimInject(kind, biomeDDL, bossDDL)
     }
 }
 
+; ============================================================
+; BIOME SELECTOR WINDOW
+;
+; Lets the user mark every biome as GOOD / BAD / IGNORED without
+; touching the script. Changes save to the INI instantly and take
+; effect on the running macro's next scan pass.
+; ============================================================
+
+global BiomeSelectorGui := 0
+
 ShowBiomeSelector(*)
 {
     global BiomeDefs, BiomeGood, BiomeBad, BiomeSelectorGui
@@ -6221,28 +5199,59 @@ ShowBiomeSelector(*)
             return
         }
         catch
+        {
             BiomeSelectorGui := 0
+        }
     }
 
     sel := Gui("+AlwaysOnTop -MaximizeBox +Resize", "Select Biomes / Bosses")
-    sel.BackColor := "FFFFFF"
+    sel.BackColor := "20242A"
 
-    sel.SetFont("s10 c000000", "Segoe UI")
+    ; Explicit font for the header text.
+    sel.SetFont("s10 cFFFFFF", "Segoe UI")
     sel.AddText("x14 y12 w700 h22",
-        "Click a row to cycle GOOD -> BAD -> IGNORED. Select multiple rows and use the buttons below for bulk changes.")
+        "Tick the biomes you want to CAMP ON (GOOD). Unticked rows are either BAD (rejoin) or IGNORED (no reaction).")
 
-    sel.SetFont("s9 c000000", "Segoe UI")
+    ; ListView: force white text on dark background so it doesn't
+    ; inherit the system default (which was making rows unreadable).
+    sel.SetFont("s9 cFFFFFF", "Segoe UI")
     lv := sel.AddListView(
-        "x14 y42 w700 h470 Grid Multi",
+        "x14 y42 w700 h470 Grid Multi Checked cFFFFFF Background20242A",
         ["Biome / Boss", "Status"])
-    lv.SetFont("s9 c000000", "Segoe UI")
+    lv.SetFont("s9 cFFFFFF", "Segoe UI")
     lv.ModifyCol(1, 540)
     lv.ModifyCol(2, 130)
 
-    RebuildBiomeList(lv)
-    lv.OnEvent("Click", OnBiomeRowClick)
+    for def in BiomeDefs
+    {
+        label := def.biomeName
+        if (def.bosses.Length > 0)
+        {
+            bossNames := ""
+            for bossObj in def.bosses
+            {
+                if (bossNames != "")
+                    bossNames .= ", "
+                bossNames .= bossObj.name
+            }
+            label .= "   —   " . bossNames
+        }
 
-    sel.SetFont("s9 c000000", "Segoe UI")
+        status := ""
+        if BiomeGood[def.id]
+            status := "GOOD"
+        else if BiomeBad[def.id]
+            status := "BAD"
+        else
+            status := "IGNORED"
+
+        lv.Add(BiomeGood[def.id] ? "Check" : "", label, status)
+    }
+
+    lv.OnEvent("ItemCheck", OnBiomeCheck)
+
+    ; Explicit font for buttons too.
+    sel.SetFont("s9 cFFFFFF", "Segoe UI")
     sel.AddButton("x14 y524 w150 h32", "Mark Selected GOOD").OnEvent("Click",
         (*) => SetSelectedStatus(lv, "good"))
     sel.AddButton("x170 y524 w150 h32", "Mark Selected BAD").OnEvent("Click",
@@ -6261,118 +5270,7 @@ ShowBiomeSelector(*)
     sel.Show("w730 h570")
 }
 
-OnBiomeRowClick(lv, rowNum, *)
-{
-    global BiomeDefs, BiomeGood, BiomeBad
-
-    if (rowNum < 1 || rowNum > BiomeDefs.Length)
-        return
-
-    def := BiomeDefs[rowNum]
-
-    if BiomeGood[def.id]
-    {
-        BiomeGood[def.id] := false
-        BiomeBad[def.id]  := true
-        SaveBiomeChoice(def.id, "bad")
-    }
-    else if BiomeBad[def.id]
-    {
-        BiomeGood[def.id] := false
-        BiomeBad[def.id]  := false
-        SaveBiomeChoice(def.id, "ignored")
-    }
-    else
-    {
-        BiomeGood[def.id] := true
-        BiomeBad[def.id]  := false
-        SaveBiomeChoice(def.id, "good")
-    }
-
-    ; Destroy and re-create all rows. This clears any selection state
-    ; Windows was tracking, which is what causes the invisible-text bug.
-    RebuildBiomeList(lv)
-}
-
-SetSelectedStatus(lv, status)
-{
-    global BiomeDefs, BiomeGood, BiomeBad
-
-    selectedRows := []
-    startIndex := -1
-    Loop
-    {
-        startIndex := SendMessage(0x100C, startIndex, 0x0002, lv.Hwnd)
-        if (startIndex = -1 || startIndex = "")
-            break
-        selectedRows.Push(startIndex + 1)
-    }
-
-    if (selectedRows.Length = 0)
-    {
-        MsgBox("Select one or more rows first, then click a status button.",
-               "Biome Selector", "Iconi")
-        return
-    }
-
-    for row in selectedRows
-    {
-        if (row < 1 || row > BiomeDefs.Length)
-            continue
-        def := BiomeDefs[row]
-
-        switch status
-        {
-            case "good":
-                BiomeGood[def.id] := true
-                BiomeBad[def.id]  := false
-            case "bad":
-                BiomeGood[def.id] := false
-                BiomeBad[def.id]  := true
-            case "ignored":
-                BiomeGood[def.id] := false
-                BiomeBad[def.id]  := false
-        }
-
-        SaveBiomeChoice(def.id, status)
-    }
-
-    RebuildBiomeList(lv)
-}
-
-ResetBiomeChoices(lv)
-{
-    global BiomeDefs, BiomeGood, BiomeBad
-
-    for i, def in BiomeDefs
-    {
-        dflt := "bad"
-        if def.HasProp("defaultStatus")
-            dflt := def.defaultStatus
-        else if (def.HasProp("defaultGood") && def.defaultGood)
-            dflt := "good"
-
-        switch dflt
-        {
-            case "good":
-                BiomeGood[def.id] := true
-                BiomeBad[def.id]  := false
-                SaveBiomeChoice(def.id, "good")
-            case "ignored":
-                BiomeGood[def.id] := false
-                BiomeBad[def.id]  := false
-                SaveBiomeChoice(def.id, "ignored")
-            default:
-                BiomeGood[def.id] := false
-                BiomeBad[def.id]  := true
-                SaveBiomeChoice(def.id, "bad")
-        }
-    }
-
-    RebuildBiomeList(lv)
-}
-
-ApplyBiomeCheck(lv, rowNum, checked)
+OnBiomeCheck(lv, rowNum, checked)
 {
     global BiomeDefs, BiomeGood, BiomeBad
 
@@ -6397,6 +5295,91 @@ ApplyBiomeCheck(lv, rowNum, checked)
     }
 }
 
+SetSelectedStatus(lv, status)
+{
+    global BiomeDefs, BiomeGood, BiomeBad
+
+    ; GetNext doesn't support a "selected" flag in AHK v2, so send
+    ; LVM_GETNEXTITEM directly with LVNI_SELECTED (0x0002).
+    ;   LVM_GETNEXTITEM = 0x100C
+    ;   returns a 0-based row index, or -1 when there are no more.
+    selectedRows := []
+    startIndex := -1
+
+    Loop
+    {
+        startIndex := SendMessage(0x100C, startIndex, 0x0002, lv.Hwnd)
+        if (startIndex = -1 || startIndex = "")
+            break
+        selectedRows.Push(startIndex + 1)   ; convert to 1-based for LV.Modify
+    }
+
+    if (selectedRows.Length = 0)
+    {
+        MsgBox("Select one or more rows first, then click a status button.",
+               "Biome Selector", "Iconi")
+        return
+    }
+
+    for row in selectedRows
+    {
+        if (row < 1 || row > BiomeDefs.Length)
+            continue
+        def := BiomeDefs[row]
+
+        switch status
+        {
+            case "good":
+                BiomeGood[def.id] := true
+                BiomeBad[def.id]  := false
+                lv.Modify(row, "Check", "", "GOOD")
+            case "bad":
+                BiomeGood[def.id] := false
+                BiomeBad[def.id]  := true
+                lv.Modify(row, "-Check", "", "BAD")
+            case "ignored":
+                BiomeGood[def.id] := false
+                BiomeBad[def.id]  := false
+                lv.Modify(row, "-Check", "", "IGNORED")
+        }
+
+        SaveBiomeChoice(def.id, status)
+    }
+}
+
+ResetBiomeChoices(lv)
+{
+    global BiomeDefs, BiomeGood, BiomeBad
+
+    for i, def in BiomeDefs
+    {
+        dflt := "bad"
+        if def.HasProp("defaultStatus")
+            dflt := def.defaultStatus
+        else if (def.HasProp("defaultGood") && def.defaultGood)
+            dflt := "good"
+
+        switch dflt
+        {
+            case "good":
+                BiomeGood[def.id] := true
+                BiomeBad[def.id]  := false
+                lv.Modify(i, "Check", "", "GOOD")
+                SaveBiomeChoice(def.id, "good")
+            case "ignored":
+                BiomeGood[def.id] := false
+                BiomeBad[def.id]  := false
+                lv.Modify(i, "-Check", "", "IGNORED")
+                SaveBiomeChoice(def.id, "ignored")
+            default:
+                BiomeGood[def.id] := false
+                BiomeBad[def.id]  := true
+                lv.Modify(i, "-Check", "", "BAD")
+                SaveBiomeChoice(def.id, "bad")
+        }
+    }
+}
+
 CloseBiomeSelector()
 {
     global BiomeSelectorGui
@@ -6407,6 +5390,160 @@ CloseBiomeSelector()
         {
         }
         BiomeSelectorGui := 0
+    }
+}
+
+; ============================================================
+; DISCORD CONFIG WINDOW
+; ============================================================
+
+global DiscordConfigGui := 0
+
+ShowDiscordConfig(*)
+{
+    global DiscordConfigGui
+    global DiscordWebhookURL, PrivateServerLink, ChatDisplayName
+    global SecondaryWebhookURL, SecondaryEnabled, DiscordDefaultRoleID
+
+    if IsObject(DiscordConfigGui)
+    {
+        try
+        {
+            DiscordConfigGui.Show()
+            WinActivate("ahk_id " . DiscordConfigGui.Hwnd)
+            return
+        }
+        catch
+            DiscordConfigGui := 0
+    }
+
+    g := Gui("+AlwaysOnTop -MaximizeBox", "Discord Notifications")
+    g.BackColor := "20242A"
+    g.SetFont("s10 cFFFFFF", "Segoe UI")
+    g.AddText("x16 y14 w500 h22", "Discord Notifications")
+    g.SetFont("s9 c9AA4B2", "Segoe UI")
+    g.AddText("x16 y34 w500 h18", "Everything here is saved to disk automatically.")
+
+    y := 62
+
+    ; Webhook URL
+    g.SetFont("s9 cFFFFFF", "Segoe UI")
+    g.AddText("x16 y" . y . " w130 h22", "Webhook URL")
+    urlEdit := g.AddEdit("x150 y" . (y - 2) . " w340 h25", Trim(DiscordWebhookURL))
+    urlEdit.SetFont("s9 c000000", "Segoe UI")
+    y += 36
+
+    ; Role ID (test only)
+    g.SetFont("s9 cFFFFFF", "Segoe UI")
+    g.AddText("x16 y" . y . " w130 h22", "Role ID (test ping)")
+    roleEdit := g.AddEdit("x150 y" . (y - 2) . " w340 h25", DiscordDefaultRoleID)
+    roleEdit.SetFont("s9 c000000", "Segoe UI")
+    y += 36
+
+    ; Chat display name
+    g.SetFont("s9 cFFFFFF", "Segoe UI")
+    g.AddText("x16 y" . y . " w130 h22", "Chat Display Name")
+    chatEdit := g.AddEdit("x150 y" . (y - 2) . " w340 h25", Trim(ChatDisplayName))
+    chatEdit.SetFont("s9 c000000", "Segoe UI")
+    y += 36
+
+    ; Private server link
+    g.SetFont("s9 cFFFFFF", "Segoe UI")
+    g.AddText("x16 y" . y . " w130 h22", "Private Server Link")
+    psEdit := g.AddEdit("x150 y" . (y - 2) . " w340 h25", Trim(PrivateServerLink))
+    psEdit.SetFont("s9 c000000", "Segoe UI")
+    y += 44
+
+    ; Secondary
+    g.SetFont("s9 cFFFFFF", "Segoe UI")
+    secCb := g.AddCheckbox("x16 y" . y . " w474 h22" . (SecondaryEnabled ? " Checked" : ""),
+        "Also send to a 2nd Discord server")
+    secCb.SetFont("s9 cFFFFFF", "Segoe UI")
+    y += 30
+
+    g.SetFont("s9 cFFFFFF", "Segoe UI")
+    g.AddText("x16 y" . y . " w130 h22", "2nd Webhook URL")
+    secEdit := g.AddEdit("x150 y" . (y - 2) . " w340 h25", Trim(SecondaryWebhookURL))
+    secEdit.SetFont("s9 c000000", "Segoe UI")
+    y += 40
+
+    ; Status label for test ping
+    g.SetFont("s9 c9AA4B2", "Segoe UI")
+    statusLabel := g.AddText("x16 y" . y . " w474 h40", "Press SEND TEST PING to check your webhook URL.")
+    y += 44
+
+    ; Buttons
+    g.SetFont("s9 cFFFFFF", "Segoe UI")
+    g.AddButton("x16 y" . y . " w200 h32", "SEND TEST PING").OnEvent("Click",
+        (*) => DoDiscordTestFromConfig(g, urlEdit, roleEdit, statusLabel))
+    g.AddButton("x230 y" . y . " w260 h32", "SAVE & CLOSE").OnEvent("Click",
+        (*) => SaveDiscordConfig(g, urlEdit, roleEdit, chatEdit, psEdit, secCb, secEdit))
+
+    g.OnEvent("Close", (*) => SaveDiscordConfig(g, urlEdit, roleEdit, chatEdit, psEdit, secCb, secEdit))
+    g.OnEvent("Escape", (*) => CloseDiscordConfig())
+
+    DiscordConfigGui := g
+    g.Show("w520 h" . (y + 60))
+}
+
+SaveDiscordConfig(g, urlEdit, roleEdit, chatEdit, psEdit, secCb, secEdit)
+{
+    global DiscordWebhookURL, PrivateServerLink, ChatDisplayName
+    global SecondaryWebhookURL, SecondaryEnabled, DiscordDefaultRoleID
+
+    DiscordWebhookURL    := Trim(urlEdit.Text)
+    DiscordDefaultRoleID := Trim(roleEdit.Text)
+    ChatDisplayName      := Trim(chatEdit.Text)
+    PrivateServerLink    := Trim(psEdit.Text)
+    SecondaryWebhookURL  := Trim(secEdit.Text)
+    SecondaryEnabled     := secCb.Value
+
+    SaveConfigValue("WebhookURL",        DiscordWebhookURL)
+    SaveConfigValue("PrivateServerLink", PrivateServerLink)
+    SaveConfigValue("ChatDisplayName",   ChatDisplayName)
+    SaveConfigValue("SecondaryWebhookURL", SecondaryWebhookURL)
+    SaveConfigValue("SecondaryEnabled",  SecondaryEnabled ? "1" : "0")
+    SaveConfigValue("DiscordDefaultRoleID", DiscordDefaultRoleID)
+
+    CloseDiscordConfig()
+}
+
+CloseDiscordConfig()
+{
+    global DiscordConfigGui
+    if IsObject(DiscordConfigGui)
+    {
+        try DiscordConfigGui.Destroy()
+        catch
+        {
+        }
+        DiscordConfigGui := 0
+    }
+}
+
+DoDiscordTestFromConfig(g, urlEdit, roleEdit, statusLabel)
+{
+    global DiscordWebhookURL
+    DiscordWebhookURL := Trim(urlEdit.Text)
+    SaveConfigValue("WebhookURL", DiscordWebhookURL)
+
+    roleID := Trim(roleEdit.Text)
+    testMessage := "🔔 Test ping from 2026 Biome Hopper."
+    
+    statusLabel.Text := "Sending test ping..."
+    statusLabel.SetFont("c9AA4B2")
+
+    sent := SendDiscordBossNotification("TEST", "TEST", testMessage, roleID)
+
+    if sent
+    {
+        statusLabel.Text := "✅ Sent successfully. Check the Discord channel."
+        statusLabel.SetFont("c55D6BE")
+    }
+    else
+    {
+        statusLabel.Text := "❌ Failed. Check the webhook URL is a valid Discord webhook link."
+        statusLabel.SetFont("cEB5757")
     }
 }
 
@@ -6514,7 +5651,7 @@ AntiAfkTick()
 
     ; Send a harmless keystroke that Roblox won't act on as a real input.
     ; Shift alone doesn't toggle anything in-game but resets the idle timer.
-    Send("{Ctrl}")
+    Send("{Shift}")
 
     AntiAfkLastDir := -AntiAfkLastDir
     LastAntiAfkTick := A_TickCount
@@ -6585,33 +5722,3 @@ WatchdogTick()
 ^!z::StageLastBoss()    ; Ctrl+Alt+z - stage last boss for CRCW
 ^!w::StageLastBiome()   ; Ctrl+Alt+W - stage last biome for CRCW
 ^+a::ToggleAutoAttackManual()   ; Ctrl+Shift+A toggles AA on/off
-^!o::TestOrengaAlert()   ; Ctrl+Alt+O — fires the Orenga alert as if detected
-
-TestOrengaAlert()
-{
-    global OrengaAlertActive
-    OrengaAlertActive := false
-    HandleOrengaFound()
-}
-
-^!b::ShowBossBarOCR()   ; Ctrl+Alt+B — dump what the boss-bar OCR sees
-
-ShowBossBarOCR()
-{
-    try
-    {
-        bossRect := GetBossBarRect()
-        r := OCR.FromRect(bossRect.x, bossRect.y, bossRect.w, bossRect.h, {lang: "en-US"})
-        MsgBox(
-            "Boss bar region:`n"
-            . "x=" . bossRect.x . "  y=" . bossRect.y . "`n"
-            . "w=" . bossRect.w . "  h=" . bossRect.h . "`n`n"
-            . "OCR text:`n[" . r.Text . "]",
-            "Boss Bar OCR"
-        )
-    }
-    catch Error as err
-    {
-        MsgBox("Failed: " . err.Message, "Boss Bar OCR")
-    }
-}

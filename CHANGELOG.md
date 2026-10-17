@@ -1,5 +1,24 @@
 # Changelog
 
+## [v1.1.0] — Performance & Stability Update
+
+This update completely refactors the core macro loop for maximum speed and reliability on multi-RDP setups.
+
+### Changed
+- **Faster Startup:** Removed pixel-detecting the Play button in favor of fast keyboard navigation.
+- **Faster Rejoin:** Removed URL-rejoin fallback; now relies purely on the browser/RAM window for consistent hops.
+- **Double-Confirm:** Requires 2 consecutive OCR hits of a BAD biome before hopping, preventing false-positives.
+- **Compact GUI:** Restored the small main window and moved Discord Config back to `Tools -> Discord Notifications`.
+- **Error Checking:** Fixed the lag bug by throttling the Roblox error check to run every 3 seconds instead of 16 times a second.
+
+### Removed
+- **Orenga Priority Override:** Temporarily removed to streamline the main loop.
+- **Ore Spawn Pings:** Temporarily removed.
+
+### Added
+- **RDP Manager:** Included a new standalone script (`rdp_manager.ahk`) to automatically tile and organize RDP windows across multiple monitors.
+
+
 All notable changes to this project are documented here.
 
 ## [v1.0.0] — First public release
@@ -47,3 +66,4 @@ The first release of CRCW Biome Hopper. Everything below is new.
 - Config is stored in `biome_hopper_config.ini` (gitignored, per-account).
 - OCR regions, join coordinates, and Play button position must be
   captured per machine. See `docs/first-run.md`.
+
