@@ -44,9 +44,9 @@ Multiple RDPs: Included in the zip is `rdp_manager.ahk`. Run this on your host P
 - **Windows 10 or 11**
 - **AutoHotkey v2.0 or newer** — [download](https://www.autohotkey.com/v2/)
 - **Roblox Account Manager** — OR any browser you use to open the private server link (Chrome, Firefox, etc.)
-- **Discord webhook** — for notifications (optional but recommended)
+- **Discord webhook** — for notifications (optional but recommended, this is what I personally use so I know ASAP and I can ping people)
 
-## Hotkeys (technically is changeable via code but not via GUI iirc)
+## Hotkeys (technically is changeable via code but not via GUI if I remember right)
 
 | Key | Action |
 |---|---|
