@@ -87,6 +87,10 @@ global BadBiomeSeenCount := 0
 global BadBiomeSeenId    := ""
 global TargetTimeoutMs := 0  ; 0 = wait indefinitely; safer so a wanted boss is never lost by timeout
 
+; --- NEW: Auto Attack Globals ---
+global BiomeAutoAttack := Map()   ; id -> true/false
+global AutoAttackSelectorGui := 0
+
 global AttackHoldX := -1
 global AttackHoldY := -1
 global AttackHoldConfigured := false
@@ -294,6 +298,23 @@ global BiomeDefs := [
       roleID: "1545937727495737374", defaultGood: true,
       bosses: [ { name: "Platformation123", keywords: ["platformation123"], roleID: "1545937727495737374", notify: true } ] },
 
+    ; ============================================================
+    ; EVENT  (default GOOD)
+    ; ============================================================
+    {id: "halloween", keywords: ["halloween"], biomeName: "Halloween",
+    roleID: "", defaultGood: true, autoAttack: true, attackSequence: "default",
+    bosses: [
+        { name: "Lord Umberhallow", keywords: ["Lord Umber"], roleID: "", notify: false},
+        { name: "Grim Reaper", keywords: ["Grim Reaper"], roleID: "", notify: false},
+        { name: "Headless Horseman", keywords: ["Headless Horseman"], roleID: "", notify: false},
+    ] },
+
+    {id: "hallowed", keywords: ["hallowed"], biomeName: "The Hallowed",
+    roleID: "", defaultGood: true, autoAttack: true, attackSequence: "default",
+    bosses: [
+        { name: "The Hallowed", keywords: ["The Hallowed"], roleID: "", notify: true}
+    ] },
+    
     ; ============================================================
     ; UNCOMMON EXCEPTIONS  (user-flagged)
     ; ============================================================
@@ -774,6 +795,20 @@ LoadSavedWebhookURL()
         }
     }
 
+        ; Load Auto-Attack choices
+    for def in BiomeDefs
+    {
+        BiomeAutoAttack[def.id] := true ; Default all to TRUE
+        try
+        {
+            v := IniRead(ConfigFile, "AutoAttack", def.id, "")
+            if (v = "0")
+                BiomeAutoAttack[def.id] := false
+            else if (v = "1")
+                BiomeAutoAttack[def.id] := true
+        }
+    }
+
     if !FileExist(ConfigFile)
         return
 
@@ -1058,19 +1093,21 @@ CreateMainUI()
     ; ---- Panel: BIOME HOPPING ----
     hopGroup := MainGui.AddGroupBox("x18 y178 w524 h165", "BIOME HOPPING")
     MainGui.SetFont("s10 cFFFFFF Bold", "Segoe UI")
-    trueButton := MainGui.AddButton("x34 y203 w238 h43", "TRUE BIOME HOP")
+    trueButton := MainGui.AddButton("x34 y203 w153 h43", "TRUE BIOME HOP")
     trueButton.OnEvent("Click", StartTrue)
-    modifiedButton := MainGui.AddButton("x288 y203 w238 h43", "MANUAL HOP")
+    
+    modifiedButton := MainGui.AddButton("x203 y203 w153 h43", "MANUAL HOP")
     modifiedButton.OnEvent("Click", ManualHop)
+    
+    afkButton := MainGui.AddButton("x372 y203 w154 h43", "AFK FARM")
+    afkButton.OnEvent("Click", ToggleAfkFarm)
     PauseButton := MainGui.AddButton("x34 y258 w153 h40", "PAUSE")
     PauseButton.OnEvent("Click", TogglePause)
     stopButton := MainGui.AddButton("x203 y258 w153 h40", "STOP")
     stopButton.OnEvent("Click", StopMacro)
     exitButton := MainGui.AddButton("x372 y258 w154 h40", "EXIT")
     exitButton.OnEvent("Click", ExitProgram)
-    resumeButton := MainGui.AddButton("x34 y302 w492 h28", "RESUME HOPPING AFTER BOSS")
-    resumeButton.OnEvent("Click", ResumeAfterBoss)
-    RegisterPanel("hop", hopGroup, [trueButton, modifiedButton, PauseButton, stopButton, exitButton, resumeButton])
+    RegisterPanel("hop", hopGroup, [trueButton, modifiedButton, PauseButton, stopButton, exitButton])
 
     ; ---- Panel: LAST OCR RESULT ----
     ocrGroup := MainGui.AddGroupBox("x18 y354 w524 h122", "LAST OCR RESULT")
@@ -1166,15 +1203,16 @@ BuildMenuBar(gui)
 
     toolsMenu := Menu()
     toolsMenu.Add("Select Biomes / Bosses...", (*) => ShowBiomeSelector())
+    toolsMenu.Add("Select Auto-Attack Biomes...", (*) => ShowAutoAttackSelector()) ;
     toolsMenu.Add("Discord Notifications...", (*) => ShowDiscordConfig())
     toolsMenu.Add("Simulate Events...",        (*) => ShowSimulator())
-    toolsMenu.Add("Alt Joiner...",             (*) => ShowAltJoiner())
-    toolsMenu.Add("Biome Luck Calculator...",  (*) => ShowLuckCalculator())
+    ;toolsMenu.Add("Alt Joiner...",             (*) => ShowAltJoiner())
+    ;toolsMenu.Add("Biome Luck Calculator...",  (*) => ShowLuckCalculator())
     toolsMenu.Add()
     toolsMenu.Add("Capture Join Window",       (*) => CaptureJoinWindow())
     toolsMenu.Add("Capture Join Click",        (*) => CaptureJoinButton())
     toolsMenu.Add("Capture Safe Click",        (*) => CaptureSafeClick())
-    toolsMenu.Add("Capture Follow Click",      (*) => CaptureFollowButton())
+    ;toolsMenu.Add("Capture Follow Click",      (*) => CaptureFollowButton())
     toolsMenu.Add()
     toolsMenu.Add("Calibrate OCR Region",      (*) => CalibrateOCR())
     toolsMenu.Add("Reset OCR to Defaults",     (*) => ResetOCR())
@@ -1745,13 +1783,6 @@ KeepRobloxChatFocused()
 {
     global LastChatFocusTick, ChatFocusInterval, AutoAttackActive
 
-    ; No chat interaction while AA is running.
-    if AutoAttackActive
-    {
-        LastChatFocusTick := A_TickCount
-        return
-    }
-
     if (A_TickCount - LastChatFocusTick < ChatFocusInterval)
         return
 
@@ -1761,6 +1792,15 @@ KeepRobloxChatFocused()
         return
     }
 
+    ; Temporarily pause auto-attack so we don't accidentally click the chat box
+    wasAttacking := false
+    if AutoAttackActive
+    {
+        wasAttacking := true
+        SetTimer(AttackSequenceTick, 0)
+        Sleep(60) ; Give it a moment to finish any click-in-progress
+    }
+
     ; Hover over the chat area to expand it visually. No key press,
     ; no click, no focus theft.
     MouseGetPos(&origX, &origY)
@@ -1768,6 +1808,12 @@ KeepRobloxChatFocused()
     Sleep(80)
     MouseMove(origX, origY, 3)
     Sleep(40)
+
+    ; Resume auto-attack if it was running
+    if wasAttacking
+    {
+        SetTimer(AttackSequenceTick, 20)
+    }
 
     LastChatFocusTick := A_TickCount
 }
@@ -1809,6 +1855,15 @@ MonitorTargetBiome()
         return "WORLD_RESET"
 
     KeepRobloxChatFocused()
+    ; ---- START AUTO-ATTACK (Runs continuously in the biome) ----
+    if (BiomeAutoAttack.Has(TargetBiomeDef.id) && BiomeAutoAttack[TargetBiomeDef.id])
+    {
+        if !AutoAttackActive
+        {
+            seqName := TargetBiomeDef.HasProp("attackSequence") ? TargetBiomeDef.attackSequence : "default"
+            StartAutoAttack(seqName)
+        }
+    }
 
     ; ---- 1) Chat OCR ----
     chatLines := []
@@ -1902,20 +1957,6 @@ MonitorTargetBiome()
         {
             UpdateOCRResult("Boss '" . bossObj.name . "' spawned - leaving biome.")
             return "LEAVE_BIOME"
-        }
-        
-        if (TargetBiomeDef.HasProp("autoAttack") && TargetBiomeDef.autoAttack)
-        {
-            seqName := TargetBiomeDef.HasProp("attackSequence") ? TargetBiomeDef.attackSequence : "default"
-            StartAutoAttack(seqName)
-        }
-        
-        ; Start auto-attack if this biome is flagged for it and we aren't
-        ; already attacking.
-        if (TargetBiomeDef.HasProp("autoAttack") && TargetBiomeDef.autoAttack)
-        {
-            seqName := TargetBiomeDef.HasProp("attackSequence") ? TargetBiomeDef.attackSequence : "default"
-            StartAutoAttack(seqName)
         }
 
         ; One boss per pass. Baseline stops repeats.
@@ -5651,7 +5692,7 @@ AntiAfkTick()
 
     ; Send a harmless keystroke that Roblox won't act on as a real input.
     ; Shift alone doesn't toggle anything in-game but resets the idle timer.
-    Send("{Shift}")
+    Send("{Ctrl}")
 
     AntiAfkLastDir := -AntiAfkLastDir
     LastAntiAfkTick := A_TickCount
@@ -5716,6 +5757,149 @@ WatchdogTick()
         NotifyError("Script has been in status **" . currentStatus . "** for "
                   . Round(stuckMs / 60000, 1) . " minutes. "
                   . "This usually means the macro is softlocked and needs a manual check.")
+    }
+}
+
+; ============================================================
+; MANUAL AFK FARMING
+; ============================================================
+ToggleAfkFarm(*) {
+    global AutoAttackActive, MacroRunning
+    
+    if AutoAttackActive {
+        StopAutoAttack()
+        UpdateStatus("IDLE", "AFK Farm Stopped")
+        UpdateOCRResult("AFK Farming stopped.")
+        return
+    }
+    
+    ; If a macro is running, stop it so we don't accidentally hop while farming
+    if MacroRunning {
+        StopMacro()
+        Sleep(500)
+    }
+    
+    if !ActivateRoblox() {
+        UpdateOCRResult("Cannot start AFK Farm - Roblox is not open.")
+        return
+    }
+    
+    StartAutoAttack("default")
+    UpdateStatus("AFK FARMING", "Auto-attacking")
+    UpdateOCRResult("AFK Farming started using 'default' sequence.`nPress AFK FARM again to stop.")
+}
+
+; ============================================================
+; AUTO-ATTACK SELECTOR GUI
+; ============================================================
+ShowAutoAttackSelector(*) {
+    global BiomeDefs, BiomeAutoAttack, AutoAttackSelectorGui
+
+    if IsObject(AutoAttackSelectorGui) {
+        try {
+            AutoAttackSelectorGui.Show()
+            WinActivate("ahk_id " . AutoAttackSelectorGui.Hwnd)
+            return
+        } catch {
+            AutoAttackSelectorGui := 0
+        }
+    }
+
+    sel := Gui("+AlwaysOnTop -MaximizeBox +Resize", "Select Auto-Attack Biomes")
+    sel.BackColor := "20242A"
+
+    sel.SetFont("s10 cFFFFFF", "Segoe UI")
+    sel.AddText("x14 y12 w700 h22",
+        "Tick the biomes you want to AUTO-ATTACK in (if they are marked GOOD).")
+
+    sel.SetFont("s9 cFFFFFF", "Segoe UI")
+    lv := sel.AddListView(
+        "x14 y42 w700 h470 Grid Multi Checked cFFFFFF Background20242A",
+        ["Biome / Boss"])
+    lv.SetFont("s9 cFFFFFF", "Segoe UI")
+    lv.ModifyCol(1, 670)
+
+    for def in BiomeDefs {
+        label := def.biomeName
+        if (def.bosses.Length > 0) {
+            bossNames := ""
+            for bossObj in def.bosses {
+                if (bossNames != "")
+                    bossNames .= ", "
+                bossNames .= bossObj.name
+            }
+            label .= "   —   " . bossNames
+        }
+        
+        checked := BiomeAutoAttack.Has(def.id) && BiomeAutoAttack[def.id]
+        lv.Add(checked ? "Check" : "", label)
+    }
+
+    lv.OnEvent("ItemCheck", OnAutoAttackCheck)
+
+    sel.SetFont("s9 cFFFFFF", "Segoe UI")
+    sel.AddButton("x14 y524 w150 h32", "Mark Selected YES").OnEvent("Click",
+        (*) => SetSelectedAutoAttack(lv, true))
+    sel.AddButton("x170 y524 w150 h32", "Mark Selected NO").OnEvent("Click",
+        (*) => SetSelectedAutoAttack(lv, false))
+    sel.AddButton("x618 y524 w96 h32", "Close").OnEvent("Click",
+        (*) => CloseAutoAttackSelector())
+
+    sel.OnEvent("Close",  (*) => CloseAutoAttackSelector())
+    sel.OnEvent("Escape", (*) => CloseAutoAttackSelector())
+
+    AutoAttackSelectorGui := sel
+    sel.Show("w730 h570")
+}
+
+OnAutoAttackCheck(lv, rowNum, checked) {
+    global BiomeDefs, BiomeAutoAttack
+    if (rowNum < 1 || rowNum > BiomeDefs.Length)
+        return
+    def := BiomeDefs[rowNum]
+    BiomeAutoAttack[def.id] := checked
+    SaveAutoAttackChoice(def.id, checked ? "1" : "0")
+}
+
+SetSelectedAutoAttack(lv, state) {
+    global BiomeDefs, BiomeAutoAttack
+    selectedRows := []
+    startIndex := -1
+
+    Loop {
+        startIndex := SendMessage(0x100C, startIndex, 0x0002, lv.Hwnd)
+        if (startIndex = -1 || startIndex = "")
+            break
+        selectedRows.Push(startIndex + 1)
+    }
+
+    if (selectedRows.Length = 0) {
+        MsgBox("Select one or more rows first.", "Auto-Attack Selector", "Iconi")
+        return
+    }
+
+    for row in selectedRows {
+        if (row < 1 || row > BiomeDefs.Length)
+            continue
+        def := BiomeDefs[row]
+        BiomeAutoAttack[def.id] := state
+        lv.Modify(row, (state ? "Check" : "-Check"))
+        SaveAutoAttackChoice(def.id, state ? "1" : "0")
+    }
+}
+
+SaveAutoAttackChoice(id, state) {
+    global ConfigFile
+    try IniWrite(state, ConfigFile, "AutoAttack", id)
+}
+
+CloseAutoAttackSelector() {
+    global AutoAttackSelectorGui
+    if IsObject(AutoAttackSelectorGui) {
+        try AutoAttackSelectorGui.Destroy()
+        catch {
+        }
+        AutoAttackSelectorGui := 0
     }
 }
 

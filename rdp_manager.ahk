@@ -5,7 +5,7 @@ CoordMode("Pixel", "Screen")
 
 ; ================== CONFIG ==================
 global IniFile := A_ScriptDir . "\rdp_manager.ini"
-global MonitorIndex := 1
+global MonitorIndex := 2
 global WinClass := "TscShellContainerClass"
 global WinExe := "mstsc.exe"
 

@@ -27,17 +27,16 @@ Multiple RDPs: Included in the zip is `rdp_manager.ahk`. Run this on your host P
 **Latest release →** [github.com/Jaisuhn/ChoerryProBiomeHopper/releases/latest](https://github.com/Jaisuhn/ChoerryProBiomeHopper/releases/latest)
 
 ---
-
 ## What it does
 
-- **Biome detection** — reads the game's biome announcements by hovering
-  the mouse over chat. Uses OCR.
-- **Boss detection** — watches for specific boss spawn lines and boss health bars
-- **Discord notifications** — pings a role or user with the biome, boss, and your private server link
-- **Auto-hop** — rejoins your private server when a bad biome appears, until a good one shows up
-- **Camp-on-good** — stays put and pings you when a rare biome appears, resets when the biome returns to normal
-- **Auto-attack** — optional attack sequence that runs while camping a biome. Sequences live in `attack_sequences.txt` and are editable via **Tools → Edit Attack Sequences**. ⚠️ *Work in progress — test on an alt before relying on it.*
-- **Watchdog** — pings you on Discord if the script gets stuck and needs a manual check
+- **Biome detection** — reads the game's biome announcements by hovering the mouse over chat. Uses OCR.
+- **Boss detection** — watches for specific boss spawn lines and boss health bars.
+- **Discord notifications** — pings a role or user with the biome, boss, and your private server link.
+- **Auto-hop** — rejoins your private server when a bad biome appears, until a good one shows up.
+- **Camp-on-good** — stays put and pings you when a rare biome appears, resets when the biome returns to normal.
+- **Auto-attack & AFK Farm** — optional attack sequence that runs while camping a biome. You can also use the standalone "AFK FARM" button to purely auto-attack without hopping.
+- **Auto-Attack Selector** — choose exactly which biomes you want to auto-attack in via `Tools -> Select Auto-Attack Biomes`.
+- **Watchdog** — pings you on Discord if the script gets stuck and needs a manual check.
 
 ## Required / Optional
 
@@ -46,7 +45,7 @@ Multiple RDPs: Included in the zip is `rdp_manager.ahk`. Run this on your host P
 - **Roblox Account Manager** — OR any browser you use to open the private server link (Chrome, Firefox, etc.)
 - **Discord webhook** — for notifications (optional but recommended, this is what I personally use so I know ASAP and I can ping people)
 
-## Hotkeys (technically is changeable via code but not via GUI if I remember right)
+## Hotkeys
 
 | Key | Action |
 |---|---|
@@ -61,11 +60,9 @@ Multiple RDPs: Included in the zip is `rdp_manager.ahk`. Run this on your host P
 | **Ctrl+Shift+1..4** | Manual hop for multi-RDP setups |
 | **Ctrl+Alt+Z** | Stage the last boss for the CRCW Discord |
 | **Ctrl+Alt+W** | Stage the last biome for the CRCW Discord |
-
-Every setting (webhook URLs, private server link, chat display name, biome
-and ore choices, captured coordinates) is saved automatically to
-`biome_hopper_config.ini` in the same folder as the script. That file is
-per-account — do not copy it between accounts.
+| **F1** *(RDP Manager)* | Minimize / Restore all RDP windows |
+| **F2** *(RDP Manager)* | Tile all RDP windows |
+| **Ctrl+Alt+M** *(RDP Manager)*| Cycle target monitor |
 
 ## Troubleshooting
 
